@@ -328,6 +328,9 @@ importers:
       '@aytracker/module-workforce':
         specifier: workspace:*
         version: link:../workforce
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../../packages/tracking
       '@aytracker/types':
         specifier: workspace:*
         version: link:../../packages/types

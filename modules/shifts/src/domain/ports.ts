@@ -1,14 +1,18 @@
 import type {
   ClientActionId,
+  DriverId,
   OrganizationId,
   PositionId,
   PositionSessionId,
   ShiftId,
   ShiftTypeId,
   SiteId,
+  TripId,
+  VehicleId,
   WorkerId,
 } from '@aytracker/types';
 import type { BreakInterval, BreakType, ShiftStatus } from './shift.js';
+import type { AssignmentContext, DriverProfile, SelectableVehicle } from './driving.js';
 import type { PositionChangeSource, PositionSessionState } from './position-session.js';
 
 export interface ShiftRecord {
@@ -175,8 +179,88 @@ export interface ShiftUnitOfWork {
   readonly shifts: ShiftRepository;
   readonly breaks: ShiftBreakRepository;
   readonly positionSessions: PositionSessionRepository;
+  readonly driving: DrivingRepository;
 }
 
 export interface TransactionRunner {
   run<T>(organizationId: OrganizationId, fn: (uow: ShiftUnitOfWork) => Promise<T>): Promise<T>;
+}
+
+/**
+ * The driving handoff.
+ *
+ * Defined here, in the module that orchestrates the position change, and implemented by an
+ * adapter that is allowed to touch the fleet and driver tables. The alternative — calling the
+ * drivers and fleet modules' own services — would mean three transactions where the whole point
+ * is that the position change, the vehicle assignment and the trip commit together.
+ *
+ * This is the one place the shifts module reaches beyond its own tables, and it does so through
+ * a contract it owns. See docs/driving-handoff.md.
+ */
+export interface DrivingRepository {
+  /** The driver profile linked to this worker, if there is one. */
+  findDriverForWorker(
+    organizationId: OrganizationId,
+    workerId: WorkerId,
+  ): Promise<DriverProfile | null>;
+
+  /** Every vehicle at the site, with its current assignment, for the picker to filter. */
+  listVehiclesForSelection(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    siteId: SiteId | null;
+  }): Promise<readonly SelectableVehicle[]>;
+
+  /** The open assignments relevant to one selection decision. */
+  loadAssignmentContext(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+  }): Promise<AssignmentContext>;
+
+  createAssignment(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    startedAt: Date;
+    isAutomatic: boolean;
+  }): Promise<{ assignmentId: string }>;
+
+  /** Closes an assignment only if it was created automatically by a previous handoff. */
+  closeAutomaticAssignment(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    endedAt: Date;
+  }): Promise<{ closed: boolean }>;
+
+  startTrip(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    positionSessionId: PositionSessionId;
+    label: string | null;
+    startedAt: Date;
+    startLatitude: number | null;
+    startLongitude: number | null;
+  }): Promise<{ tripId: TripId }>;
+
+  /** The open trip attached to a position session, if any. */
+  findTripForSession(
+    organizationId: OrganizationId,
+    positionSessionId: PositionSessionId,
+  ): Promise<{
+    tripId: TripId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    status: 'PLANNED' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
+    startedAt: Date | null;
+  } | null>;
+
+  /** Closes the trip, computing its distance from the stored points. */
+  closeTrip(input: {
+    organizationId: OrganizationId;
+    tripId: TripId;
+    endedAt: Date;
+  }): Promise<{ distanceMeters: number; durationSeconds: number; untrackedSeconds: number }>;
 }

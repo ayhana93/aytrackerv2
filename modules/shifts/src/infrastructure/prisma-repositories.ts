@@ -14,6 +14,7 @@ import { ConflictError } from '@aytracker/domain';
 import { createHash } from 'node:crypto';
 import type { BreakInterval, BreakType, ShiftStatus } from '../domain/shift.js';
 import type { PositionChangeSource, PositionSessionState } from '../domain/position-session.js';
+import { PrismaDrivingRepository } from './prisma-driving-repository.js';
 import type {
   IdempotencyStore,
   PositionSessionRepository,
@@ -334,6 +335,7 @@ export class PrismaShiftTransactionRunner implements TransactionRunner {
         shifts: new PrismaShiftRepository(tx),
         breaks: new PrismaShiftBreakRepository(tx),
         positionSessions: new PrismaPositionSessionRepository(tx),
+        driving: new PrismaDrivingRepository(tx),
       }),
     );
   }

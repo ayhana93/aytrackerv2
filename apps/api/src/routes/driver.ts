@@ -28,7 +28,9 @@ const IDEMPOTENCY_TTL_SECONDS = 48 * 60 * 60;
 
 export function driverRoutes(services: AppServices): FastifyPluginAsync {
   return async (app) => {
-    app.addHook('preHandler', app.requireActorType(['DRIVER']));
+    // Accepts a driver who logged in here, and a worker whose session is currently elevated by
+    // an open driving position. Both carry `actor.driverId`; neither can be a plain worker.
+    app.addHook('preHandler', app.requireDriverContext());
     app.addHook('preHandler', app.requireEntitlement(FEATURES.DRIVER_PORTAL));
 
     async function idempotent<T>(
@@ -41,7 +43,7 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
       const actor = app.requireAuth(request);
       const claim = await services.idempotency.claim({
         organizationId: actor.organizationId,
-        actorType: 'DRIVER',
+        actorType: actor.actorType,
         actorId: actor.driverId!,
         clientActionId,
         endpoint,
@@ -54,7 +56,7 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
         const result = await run();
         await services.idempotency.complete({
           organizationId: actor.organizationId,
-          actorType: 'DRIVER',
+          actorType: actor.actorType,
           actorId: actor.driverId!,
           clientActionId,
           response: result,
@@ -64,7 +66,7 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
       } catch (error) {
         await services.idempotency.release({
           organizationId: actor.organizationId,
-          actorType: 'DRIVER',
+          actorType: actor.actorType,
           actorId: actor.driverId!,
           clientActionId,
         });

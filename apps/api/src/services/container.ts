@@ -11,6 +11,7 @@ import {
   WorkforceQueryService,
 } from '@aytracker/module-workforce';
 import {
+  DrivingCommandService,
   PrismaIdempotencyStore,
   PrismaShiftTransactionRunner,
   ShiftCommandService,
@@ -53,6 +54,8 @@ export interface AppServices {
 
   readonly workforce: WorkforceQueryService;
   readonly shifts: ShiftCommandService;
+  /** The worker → driver handoff. Shares the shift transaction runner, by design. */
+  readonly driving: DrivingCommandService;
   readonly trips: TripCommandService;
   readonly idempotency: IdempotencyStore;
 
@@ -78,12 +81,13 @@ export function buildServices(config: AppConfig, clock: Clock = systemClock): Ap
     new PrismaOrganizationPolicyRepository(prisma),
   );
 
-  const shifts = new ShiftCommandService(
-    new PrismaShiftTransactionRunner(prisma),
-    workforce,
-    events,
-    clock,
-  );
+  const shiftTransactions = new PrismaShiftTransactionRunner(prisma);
+
+  const shifts = new ShiftCommandService(shiftTransactions, workforce, events, clock);
+
+  // Constructed with the same transaction runner as `shifts`: the position change, the vehicle
+  // assignment and the trip have to commit together or the handoff is half-applied.
+  const driving = new DrivingCommandService(shiftTransactions, workforce, events, clock);
 
   const trips = new TripCommandService(
     new PrismaDriverTransactionRunner(prisma),
@@ -103,6 +107,7 @@ export function buildServices(config: AppConfig, clock: Clock = systemClock): Ap
     markets: new MarketService(prisma, config.env.DEFAULT_MARKET),
     workforce,
     shifts,
+    driving,
     trips,
     idempotency: new PrismaIdempotencyStore(prisma),
     // Seller establishment. Bulgaria initially; moving it is a configuration change plus a

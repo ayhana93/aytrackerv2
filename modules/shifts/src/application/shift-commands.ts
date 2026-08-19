@@ -32,6 +32,7 @@ import {
   type PositionChangeSource,
 } from '../domain/position-session.js';
 import type { ShiftUnitOfWork, TransactionRunner } from '../domain/ports.js';
+import { DrivingCommandService } from './driving-commands.js';
 
 /**
  * Shift commands.
@@ -149,11 +150,13 @@ export class ShiftCommandService {
    * Ends a shift: closes any open break, closes the open position session, computes the
    * durations server-side, and moves the shift to COMPLETED. One transaction.
    */
-  async endShift(input: {
-    organizationId: OrganizationId;
-    workerId: WorkerId;
-    at: Date;
-  }): Promise<{ shiftId: ShiftId; workedSeconds: number; breakSeconds: number }> {
+  async endShift(input: { organizationId: OrganizationId; workerId: WorkerId; at: Date }): Promise<{
+    shiftId: ShiftId;
+    workedSeconds: number;
+    breakSeconds: number;
+    /** Set when the worker was driving; the caller must strip the driving session permissions. */
+    endedDriving: Awaited<ReturnType<typeof DrivingCommandService.endDrivingForSession>>;
+  }> {
     const result = await this.transactions.run(input.organizationId, async (uow) => {
       const shift = await this.requireOpenShift(uow, input.organizationId, input.workerId);
       assertTransition(shift.status, 'COMPLETED');
@@ -182,7 +185,14 @@ export class ShiftCommandService {
         input.organizationId,
         shift.id,
       );
+      let driving: Awaited<ReturnType<typeof DrivingCommandService.endDrivingForSession>> = null;
       if (openSession) {
+        // A worker who ends their shift while driving must not leave a trip running.
+        driving = await DrivingCommandService.endDrivingForSession(uow, {
+          organizationId: input.organizationId,
+          positionSessionId: openSession.id,
+          at: input.at,
+        });
         const plan = planSessionClose(openSession, input.at);
         await uow.positionSessions.close({ organizationId: input.organizationId, ...plan });
       }
@@ -207,6 +217,7 @@ export class ShiftCommandService {
         shiftId: shift.id,
         workedSeconds: duration.workedSeconds,
         breakSeconds: duration.breakSeconds,
+        endedDriving: driving,
       };
     });
 
@@ -217,7 +228,12 @@ export class ShiftCommandService {
       payload: { ...result, workerId: input.workerId },
     });
 
-    return result;
+    return {
+      shiftId: result.shiftId,
+      workedSeconds: result.workedSeconds,
+      breakSeconds: result.breakSeconds,
+      endedDriving: result.endedDriving,
+    };
   }
 
   async startBreak(input: {
@@ -289,6 +305,8 @@ export class ShiftCommandService {
     shiftId: ShiftId;
     closedSessionId: PositionSessionId | null;
     openedSessionId: PositionSessionId;
+    /** Set when the worker was driving and has now stopped. */
+    endedDriving: Awaited<ReturnType<typeof DrivingCommandService.endDrivingForSession>>;
   }> {
     await this.assertEligible(
       input.organizationId,
@@ -298,6 +316,8 @@ export class ShiftCommandService {
     );
 
     const result = await this.transactions.run(input.organizationId, async (uow) => {
+      let endedDriving: Awaited<ReturnType<typeof DrivingCommandService.endDrivingForSession>> =
+        null;
       const shift = await this.requireOpenShift(uow, input.organizationId, input.workerId);
       if (shift.status === 'ON_BREAK') {
         throw new PreconditionFailedError(
@@ -315,6 +335,13 @@ export class ShiftCommandService {
       });
 
       if (plan.closing) {
+        // Moving off a driving position ends the trip in the same transaction. Without this a
+        // worker could be recorded at Machine 2 with a trip of theirs still running.
+        endedDriving = await DrivingCommandService.endDrivingForSession(uow, {
+          organizationId: input.organizationId,
+          positionSessionId: plan.closing.sessionId,
+          at: input.at,
+        });
         await uow.positionSessions.close({
           organizationId: input.organizationId,
           ...plan.closing,
@@ -334,6 +361,7 @@ export class ShiftCommandService {
         closedSessionId: plan.closing?.sessionId ?? null,
         openedSessionId: opened.id,
         fromPositionId: current?.positionId ?? null,
+        endedDriving,
       };
     });
 
@@ -354,6 +382,7 @@ export class ShiftCommandService {
       shiftId: result.shiftId,
       closedSessionId: result.closedSessionId,
       openedSessionId: result.openedSessionId,
+      endedDriving: result.endedDriving,
     };
   }
 

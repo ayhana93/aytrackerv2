@@ -509,6 +509,9 @@ model Site {
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "sites_tenant_key")
   @@map("sites")
 }
 
@@ -531,10 +534,23 @@ model WorkArea {
   @@unique([organizationId, siteId, code])
   @@index([organizationId, status])
   @@index([organizationId, siteId])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "work_areas_tenant_key")
   @@map("work_areas")
 }
 
 /// How a worker is allowed to move onto a position. See docs/position-management.md.
+/// What occupying a position means operationally.
+///
+/// STANDARD is a place on the floor. DRIVING means the worker leaves the floor and takes a
+/// vehicle — occupying it opens a driving context (vehicle assignment + trip) alongside the
+/// position session, and leaving it closes that context. See docs/driving-handoff.md.
+enum PositionKind {
+  STANDARD
+  DRIVING
+}
+
 enum PositionChangeMode {
   INSTANT
   QUALIFICATION_REQUIRED
@@ -550,6 +566,7 @@ model Position {
   code           String
   description    String?
   changeMode     PositionChangeMode @default(QUALIFICATION_REQUIRED)
+  kind           PositionKind       @default(STANDARD)
   /// Optional cap on concurrent workers. Null = unlimited.
   capacity       Int?
   /// Stable token embedded in the position QR code. Rotatable; never a credential by itself.
@@ -571,6 +588,9 @@ model Position {
   @@index([organizationId, status])
   @@index([organizationId, workAreaId])
   @@index([organizationId, siteId, status])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "positions_tenant_key")
   @@map("positions")
 }
 
@@ -624,6 +644,9 @@ model Worker {
   @@index([organizationId, status])
   @@index([organizationId, siteId, status])
   @@index([organizationId, createdAt])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "workers_tenant_key")
   @@map("workers")
 }
 
@@ -647,6 +670,9 @@ model Qualification {
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "qualifications_tenant_key")
   @@map("qualifications")
 }
 
@@ -741,6 +767,9 @@ model ShiftType {
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "shift_types_tenant_key")
   @@map("shift_types")
 }
 
@@ -786,6 +815,9 @@ model Shift {
   @@index([organizationId, siteId, scheduledStart])
   @@index([organizationId, actualStart])
   @@index([organizationId, createdAt])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "shifts_tenant_key")
   @@map("shifts")
 }
 
@@ -841,10 +873,15 @@ model PositionSession {
   position     Position     @relation(fields: [positionId], references: [id], onDelete: Restrict)
 
   productionEntries ProductionEntry[]
+  /// Present only for sessions on a DRIVING position.
+  driverTrip        DriverTrip?
 
   @@index([organizationId, shiftId, startedAt])
   @@index([organizationId, workerId, startedAt])
   @@index([organizationId, positionId, startedAt])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "position_sessions_tenant_key")
   @@map("position_sessions")
 }
 
@@ -869,6 +906,9 @@ model ProductTemplate {
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "product_templates_tenant_key")
   @@map("product_templates")
 }
 
@@ -950,6 +990,9 @@ model Driver {
   @@unique([organizationId, driverCode])
   @@index([organizationId, status])
   @@index([organizationId, licenseExpiresAt])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "drivers_tenant_key")
   @@map("drivers")
 }
 
@@ -1016,6 +1059,9 @@ model Vehicle {
   @@index([organizationId, status])
   @@index([organizationId, siteId])
   @@index([organizationId, vehicleType])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "vehicles_tenant_key")
   @@map("vehicles")
 }
 
@@ -1027,6 +1073,11 @@ model VehicleAssignment {
   startedAt      DateTime  @db.Timestamptz(6)
   endedAt        DateTime? @db.Timestamptz(6)
   assignedByUserId String?
+  /// True when the driving handoff created this assignment for one shift rather than a fleet
+  /// manager assigning the vehicle long-term. Only automatic assignments are closed when the
+  /// worker leaves the driving position — ending a manual assignment because someone finished a
+  /// shift would quietly undo a deliberate decision.
+  isAutomatic    Boolean   @default(false)
   notes          String?
   createdAt      DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
@@ -1056,6 +1107,10 @@ model DriverTrip {
   driverId       String
   vehicleId      String
   status         TripStatus @default(PLANNED)
+  /// Set when the trip was opened by a worker moving onto a DRIVING position. Closing that
+  /// position session closes this trip, which is what stops a worker being recorded at Machine 2
+  /// while a trip of theirs is still running.
+  positionSessionId String? @unique
 
   label          String?
   startedAt      DateTime?  @db.Timestamptz(6)
@@ -1088,6 +1143,7 @@ model DriverTrip {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   driver       Driver       @relation(fields: [driverId], references: [id], onDelete: Restrict)
   vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  positionSession PositionSession? @relation(fields: [positionSessionId], references: [id], onDelete: SetNull)
 
   locationPoints TripLocationPoint[]
   trackingEvents TrackingEvent[]
@@ -1097,6 +1153,9 @@ model DriverTrip {
   @@index([organizationId, vehicleId, startedAt])
   @@index([organizationId, status])
   @@index([organizationId, startedAt])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "driver_trips_tenant_key")
   @@map("driver_trips")
 }
 
@@ -1200,6 +1259,9 @@ model FuelExpense {
   @@index([organizationId, driverId, date])
   @@index([organizationId, tripId])
   @@index([organizationId, date])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "fuel_expenses_tenant_key")
   @@map("fuel_expenses")
 }
 

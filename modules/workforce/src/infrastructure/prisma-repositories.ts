@@ -125,6 +125,7 @@ export class PrismaPositionRepository implements PositionRepository {
       select: {
         id: true,
         changeMode: true,
+        kind: true,
         status: true,
         capacity: true,
         requiredQualifications: { select: { qualificationId: true } },
@@ -143,6 +144,7 @@ export class PrismaPositionRepository implements PositionRepository {
       select: {
         id: true,
         changeMode: true,
+        kind: true,
         status: true,
         capacity: true,
         requiredQualifications: { select: { qualificationId: true } },
@@ -163,6 +165,7 @@ export class PrismaPositionRepository implements PositionRepository {
       select: {
         id: true,
         changeMode: true,
+        kind: true,
         status: true,
         capacity: true,
         requiredQualifications: { select: { qualificationId: true } },
@@ -182,6 +185,7 @@ export class PrismaPositionRepository implements PositionRepository {
     position: {
       id: string;
       changeMode: PositionRule['changeMode'];
+      kind: PositionRule['kind'];
       status: PositionRule['status'];
       capacity: number | null;
       requiredQualifications: { qualificationId: string }[];
@@ -197,6 +201,7 @@ export class PrismaPositionRepository implements PositionRepository {
     return {
       positionId: position.id as PositionId,
       changeMode: position.changeMode,
+      kind: position.kind,
       status: position.status,
       requiredQualificationIds: position.requiredQualifications.map(
         (entry) => entry.qualificationId as QualificationId,

@@ -14,6 +14,7 @@ export {
   type EligibilityOverride,
   type EligibilityReason,
   type PositionChangeMode,
+  type PositionKind,
   type PositionRule,
   type WorkerQualificationHolding,
 } from './domain/eligibility.js';
