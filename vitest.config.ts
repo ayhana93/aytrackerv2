@@ -9,9 +9,15 @@ export default defineConfig({
       'modules/*/src/**/*.{test,spec}.ts',
       'apps/api/src/**/*.{test,spec}.ts',
       'tests/unit/**/*.{test,spec}.ts',
-      'tests/integration/**/*.{test,spec}.ts',
     ],
-    exclude: ['**/node_modules/**', '**/dist/**', '**/.next/**', 'tests/e2e/**'],
+    // Integration tests need a real database and run serially — see vitest.integration.config.ts.
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.next/**',
+      'tests/e2e/**',
+      'tests/integration/**',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

@@ -49,7 +49,6 @@ export function formatDuration(seconds: number, locale: LocaleCode): string {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
 
-  const formatter = new Intl.NumberFormat(locale, { style: 'unit', unitDisplay: 'short' });
   const hourPart =
     hours > 0
       ? new Intl.NumberFormat(locale, { style: 'unit', unit: 'hour', unitDisplay: 'short' }).format(
@@ -61,7 +60,6 @@ export function formatDuration(seconds: number, locale: LocaleCode): string {
     unit: 'minute',
     unitDisplay: 'short',
   }).format(minutes);
-  void formatter;
 
   return hourPart ? `${hourPart} ${minutePart}` : minutePart;
 }

@@ -2,7 +2,7 @@
   "name": "aytracker",
   "version": "2.3.0",
   "private": true,
-  "description": "AYtracker v2 — multi-tenant manufacturing & fleet operations SaaS",
+  "description": "AYtracker v2 \u2014 multi-tenant manufacturing & fleet operations SaaS",
   "license": "UNLICENSED",
   "packageManager": "pnpm@10.33.0",
   "engines": {
@@ -27,7 +27,9 @@
     "db:seed": "pnpm --filter @aytracker/database seed",
     "db:studio": "pnpm --filter @aytracker/database studio",
     "db:reset": "pnpm --filter @aytracker/database reset",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:all": "pnpm test && pnpm test:integration"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",

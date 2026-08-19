@@ -48,5 +48,19 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./app": {
+      "types": "./dist/app.d.ts",
+      "default": "./dist/app.js"
+    },
+    "./services/container": {
+      "types": "./dist/services/container.d.ts",
+      "default": "./dist/services/container.js"
+    }
   }
 }

@@ -421,6 +421,9 @@ importers:
       '@aytracker/auth':
         specifier: workspace:*
         version: link:../auth
+      '@aytracker/billing':
+        specifier: workspace:*
+        version: link:../billing
       prisma:
         specifier: ^6.3.0
         version: 6.19.3(magicast@0.3.5)(typescript@5.9.3)
@@ -520,24 +523,63 @@ importers:
 
   tests:
     devDependencies:
+      '@aytracker/api':
+        specifier: workspace:*
+        version: link:../apps/api
       '@aytracker/auth':
         specifier: workspace:*
         version: link:../packages/auth
       '@aytracker/billing':
         specifier: workspace:*
         version: link:../packages/billing
+      '@aytracker/config':
+        specifier: workspace:*
+        version: link:../packages/config
       '@aytracker/database':
         specifier: workspace:*
         version: link:../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../packages/domain
+      '@aytracker/localization':
+        specifier: workspace:*
+        version: link:../packages/localization
       '@aytracker/market':
         specifier: workspace:*
         version: link:../packages/market
+      '@aytracker/module-audit':
+        specifier: workspace:*
+        version: link:../modules/audit
+      '@aytracker/module-drivers':
+        specifier: workspace:*
+        version: link:../modules/drivers
+      '@aytracker/module-fleet':
+        specifier: workspace:*
+        version: link:../modules/fleet
+      '@aytracker/module-production':
+        specifier: workspace:*
+        version: link:../modules/production
+      '@aytracker/module-recommendations':
+        specifier: workspace:*
+        version: link:../modules/recommendations
+      '@aytracker/module-reporting':
+        specifier: workspace:*
+        version: link:../modules/reporting
+      '@aytracker/module-shifts':
+        specifier: workspace:*
+        version: link:../modules/shifts
+      '@aytracker/module-workforce':
+        specifier: workspace:*
+        version: link:../modules/workforce
       '@aytracker/tracking':
         specifier: workspace:*
         version: link:../packages/tracking
+      '@aytracker/ui':
+        specifier: workspace:*
+        version: link:../packages/ui
+      '@aytracker/validation':
+        specifier: workspace:*
+        version: link:../packages/validation
       '@playwright/test':
         specifier: ^1.49.1
         version: 1.62.1

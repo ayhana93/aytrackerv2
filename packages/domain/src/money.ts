@@ -94,7 +94,6 @@ export function sumMoney(values: readonly Money[], currency: CurrencyCode): Mone
  * currency's minor unit. Used for `liters × pricePerLiter` and tax.
  */
 export function multiplyMoney(value: Money, factor: string | number): Money {
-  const exponent = minorUnitExponent(value.currency);
   const factorString = typeof factor === 'number' ? String(factor) : factor.trim();
   const factorMatch = /^(-)?(\d+)(?:\.(\d+))?$/.exec(factorString);
   if (!factorMatch) {
@@ -108,7 +107,6 @@ export function multiplyMoney(value: Money, factor: string | number): Money {
   const scaled = minor * factorInt;
   const divisor = 10n ** BigInt(factorScale);
   const rounded = divideHalfUp(scaled, divisor);
-  void exponent;
   return fromMinorUnits(rounded, value.currency);
 }
 
