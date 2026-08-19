@@ -13,8 +13,8 @@ export default function HomePage() {
       <section className="placeholder-notice">
         <h2>Development build</h2>
         <p>
-          The interface is intentionally unstyled. Architecture, domain logic and the API are
-          built first; the visual design begins once a design reference has been provided.
+          The interface is intentionally unstyled. Architecture, domain logic and the API are built
+          first; the visual design begins once a design reference has been provided.
         </p>
       </section>
 

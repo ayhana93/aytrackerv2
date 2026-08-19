@@ -46,7 +46,11 @@ export interface EligibilityInput {
 }
 
 export type EligibilityDecision =
-  | { readonly allowed: true; readonly requiresApproval: boolean; readonly reason: EligibilityReason }
+  | {
+      readonly allowed: true;
+      readonly requiresApproval: boolean;
+      readonly reason: EligibilityReason;
+    }
   | { readonly allowed: false; readonly reason: EligibilityReason };
 
 export type EligibilityReason =

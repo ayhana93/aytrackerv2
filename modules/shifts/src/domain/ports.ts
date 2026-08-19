@@ -75,10 +75,7 @@ export interface ShiftBreakRepository {
     organizationId: OrganizationId,
     shiftId: ShiftId,
   ): Promise<{ id: string; startedAt: Date; type: BreakType } | null>;
-  listForShift(
-    organizationId: OrganizationId,
-    shiftId: ShiftId,
-  ): Promise<readonly BreakInterval[]>;
+  listForShift(organizationId: OrganizationId, shiftId: ShiftId): Promise<readonly BreakInterval[]>;
   open(input: {
     organizationId: OrganizationId;
     shiftId: ShiftId;

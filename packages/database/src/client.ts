@@ -27,9 +27,7 @@ export interface CreateClientOptions {
 export function getPrismaClient(options: CreateClientOptions = {}): PrismaClient {
   if (!singleton) {
     singleton = new PrismaClient({
-      ...(options.databaseUrl
-        ? { datasources: { db: { url: options.databaseUrl } } }
-        : {}),
+      ...(options.databaseUrl ? { datasources: { db: { url: options.databaseUrl } } } : {}),
       log: options.logQueries
         ? [{ emit: 'event', level: 'query' }, 'warn', 'error']
         : ['warn', 'error'],

@@ -22,11 +22,16 @@ export function hasAnyPermission(actor: ActorContext, permissions: readonly Perm
   return permissions.some((permission) => actor.permissions.includes(permission));
 }
 
-export function hasAllPermissions(actor: ActorContext, permissions: readonly Permission[]): boolean {
+export function hasAllPermissions(
+  actor: ActorContext,
+  permissions: readonly Permission[],
+): boolean {
   return permissions.every((permission) => actor.permissions.includes(permission));
 }
 
-export function assertAuthenticated(actor: ActorContext | undefined): asserts actor is ActorContext {
+export function assertAuthenticated(
+  actor: ActorContext | undefined,
+): asserts actor is ActorContext {
   if (!actor) throw new UnauthenticatedError();
 }
 
@@ -38,14 +43,15 @@ export function assertPermission(actor: ActorContext, permission: Permission): v
   }
 }
 
-export function assertAnyPermission(
-  actor: ActorContext,
-  permissions: readonly Permission[],
-): void {
+export function assertAnyPermission(actor: ActorContext, permissions: readonly Permission[]): void {
   if (!hasAnyPermission(actor, permissions)) {
-    throw new ForbiddenError('auth.permission_denied', `Missing one of: ${permissions.join(', ')}`, {
-      details: { requiredAnyOf: permissions },
-    });
+    throw new ForbiddenError(
+      'auth.permission_denied',
+      `Missing one of: ${permissions.join(', ')}`,
+      {
+        details: { requiredAnyOf: permissions },
+      },
+    );
   }
 }
 
@@ -88,7 +94,10 @@ export function assertActorType(
   allowed: readonly ActorContext['actorType'][],
 ): void {
   if (!allowed.includes(actor.actorType)) {
-    throw new ForbiddenError('auth.wrong_actor_type', `Requires actor type: ${allowed.join(' | ')}`);
+    throw new ForbiddenError(
+      'auth.wrong_actor_type',
+      `Requires actor type: ${allowed.join(' | ')}`,
+    );
   }
 }
 

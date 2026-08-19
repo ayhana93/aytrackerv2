@@ -1,4 +1,4 @@
-import { DomainError } from './errors.js';
+import type { DomainError } from './errors.js';
 
 /**
  * Result type for operations whose failure is an expected business outcome rather than a bug.
@@ -7,8 +7,7 @@ import { DomainError } from './errors.js';
  * Genuinely exceptional situations still throw — see docs/architecture.md § error handling.
  */
 export type Result<T, E extends DomainError = DomainError> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: E };
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: E };
 
 export function ok<T>(value: T): Result<T, never> {
   return { ok: true, value };

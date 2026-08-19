@@ -15,10 +15,7 @@ import type {
   SiteId,
   WorkerId,
 } from '@aytracker/types';
-import {
-  ELIGIBILITY_ERROR_CODES,
-  type WorkforceQueryService,
-} from '@aytracker/module-workforce';
+import { ELIGIBILITY_ERROR_CODES, type WorkforceQueryService } from '@aytracker/module-workforce';
 import {
   assertCanEndBreak,
   assertCanStartBreak,
@@ -456,11 +453,13 @@ export class ShiftCommandService {
     let closed = 0;
     for (const shift of overrunning) {
       if (!shift.actualStart) continue;
-      if (!shouldAutoClose({
-        actualStart: shift.actualStart,
-        now,
-        maxShiftDurationMinutes: input.policy.maxShiftDurationMinutes,
-      })) {
+      if (
+        !shouldAutoClose({
+          actualStart: shift.actualStart,
+          now,
+          maxShiftDurationMinutes: input.policy.maxShiftDurationMinutes,
+        })
+      ) {
         continue;
       }
 

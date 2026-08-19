@@ -86,8 +86,7 @@ export interface SessionRecord {
 export type SessionRejectionReason = 'EXPIRED' | 'REVOKED' | 'NO_TENANT';
 
 export type SessionValidation =
-  | { readonly valid: true }
-  | { readonly valid: false; readonly reason: SessionRejectionReason };
+  { readonly valid: true } | { readonly valid: false; readonly reason: SessionRejectionReason };
 
 export function validateSession(session: SessionRecord, now: Date): SessionValidation {
   if (session.revokedAt !== null) return { valid: false, reason: 'REVOKED' };

@@ -61,7 +61,8 @@ export function fromMinorUnits(minor: bigint, currency: CurrencyCode): Money {
 }
 
 export function money(amount: string | number, currency: CurrencyCode): Money {
-  const asString = typeof amount === 'number' ? amount.toFixed(minorUnitExponent(currency)) : amount;
+  const asString =
+    typeof amount === 'number' ? amount.toFixed(minorUnitExponent(currency)) : amount;
   // Round-trip through minor units so the stored string is always canonical.
   return fromMinorUnits(toMinorUnits(asString, currency), currency);
 }
@@ -77,12 +78,18 @@ function sameCurrency(a: Money, b: Money): void {
 
 export function addMoney(a: Money, b: Money): Money {
   sameCurrency(a, b);
-  return fromMinorUnits(toMinorUnits(a.amount, a.currency) + toMinorUnits(b.amount, b.currency), a.currency);
+  return fromMinorUnits(
+    toMinorUnits(a.amount, a.currency) + toMinorUnits(b.amount, b.currency),
+    a.currency,
+  );
 }
 
 export function subtractMoney(a: Money, b: Money): Money {
   sameCurrency(a, b);
-  return fromMinorUnits(toMinorUnits(a.amount, a.currency) - toMinorUnits(b.amount, b.currency), a.currency);
+  return fromMinorUnits(
+    toMinorUnits(a.amount, a.currency) - toMinorUnits(b.amount, b.currency),
+    a.currency,
+  );
 }
 
 export function sumMoney(values: readonly Money[], currency: CurrencyCode): Money {

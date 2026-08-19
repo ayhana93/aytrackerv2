@@ -67,8 +67,31 @@ async function seedMarkets(): Promise<void> {
       code: 'EU',
       name: 'European Union',
       countryCodes: [
-        'AT', 'BE', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'GR', 'HU', 'IE',
-        'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
+        'AT',
+        'BE',
+        'HR',
+        'CY',
+        'CZ',
+        'DK',
+        'EE',
+        'FI',
+        'FR',
+        'GR',
+        'HU',
+        'IE',
+        'IT',
+        'LV',
+        'LT',
+        'LU',
+        'MT',
+        'NL',
+        'PL',
+        'PT',
+        'RO',
+        'SK',
+        'SI',
+        'ES',
+        'SE',
       ],
       defaultCurrency: 'EUR',
       defaultLocale: 'en',
@@ -150,7 +173,10 @@ async function seedPrices(): Promise<void> {
    * row and retiring the old, which is what keeps existing subscriptions on the price they were
    * sold at.
    */
-  const table: Record<string, Record<string, { monthly: string; annual: string; currency: string }>> = {
+  const table: Record<
+    string,
+    Record<string, { monthly: string; annual: string; currency: string }>
+  > = {
     BG: {
       starter: { monthly: '49', annual: '490', currency: 'EUR' },
       professional: { monthly: '89', annual: '890', currency: 'EUR' },
@@ -221,7 +247,11 @@ async function seedSystemRoles(): Promise<void> {
     if (existing) {
       await prisma.role.update({
         where: { id: existing.id },
-        data: { name: role.name, description: role.description, permissions: [...role.permissions] },
+        data: {
+          name: role.name,
+          description: role.description,
+          permissions: [...role.permissions],
+        },
       });
     } else {
       await prisma.role.create({
@@ -315,7 +345,14 @@ async function seedDemoOrganization(): Promise<void> {
       preferredLocale: 'bg',
       emailVerifiedAt: new Date(),
       memberships: ownerRole
-        ? { create: { organizationId: organization.id, roleId: ownerRole.id, status: 'ACTIVE', joinedAt: new Date() } }
+        ? {
+            create: {
+              organizationId: organization.id,
+              roleId: ownerRole.id,
+              status: 'ACTIVE',
+              joinedAt: new Date(),
+            },
+          }
         : undefined,
     },
   });
@@ -393,7 +430,9 @@ async function seedDemoOrganization(): Promise<void> {
       code: 'M1',
       changeMode: 'QUALIFICATION_REQUIRED',
       qrToken: 'demo-qr-machine-1',
-      requiredQualifications: { create: [{ organizationId: organization.id, qualificationId: extQual!.id }] },
+      requiredQualifications: {
+        create: [{ organizationId: organization.id, qualificationId: extQual!.id }],
+      },
     },
   });
   const machine2 = await prisma.position.create({
@@ -405,7 +444,9 @@ async function seedDemoOrganization(): Promise<void> {
       code: 'M2',
       changeMode: 'QUALIFICATION_REQUIRED',
       qrToken: 'demo-qr-machine-2',
-      requiredQualifications: { create: [{ organizationId: organization.id, qualificationId: extQual!.id }] },
+      requiredQualifications: {
+        create: [{ organizationId: organization.id, qualificationId: extQual!.id }],
+      },
     },
   });
   await prisma.position.create({
@@ -416,7 +457,9 @@ async function seedDemoOrganization(): Promise<void> {
       name: 'Machine 4',
       code: 'M4',
       changeMode: 'QUALIFICATION_REQUIRED',
-      requiredQualifications: { create: [{ organizationId: organization.id, qualificationId: cutQual!.id }] },
+      requiredQualifications: {
+        create: [{ organizationId: organization.id, qualificationId: cutQual!.id }],
+      },
     },
   });
   const packagingPosition = await prisma.position.create({
@@ -439,7 +482,9 @@ async function seedDemoOrganization(): Promise<void> {
       code: 'PB1',
       changeMode: 'SUPERVISOR_APPROVAL',
       capacity: 1,
-      requiredQualifications: { create: [{ organizationId: organization.id, qualificationId: paintQual!.id }] },
+      requiredQualifications: {
+        create: [{ organizationId: organization.id, qualificationId: paintQual!.id }],
+      },
     },
   });
 
@@ -727,8 +772,14 @@ async function seedDemoOrganization(): Promise<void> {
 
   // A sparse but plausible track along the Sofia–Plovdiv corridor.
   const trackPoints = [
-    [42.6977, 23.3219], [42.6520, 23.4380], [42.5900, 23.6100], [42.5100, 23.8300],
-    [42.4300, 24.0100], [42.3200, 24.2600], [42.2400, 24.4700], [42.1354, 24.7453],
+    [42.6977, 23.3219],
+    [42.652, 23.438],
+    [42.59, 23.61],
+    [42.51, 23.83],
+    [42.43, 24.01],
+    [42.32, 24.26],
+    [42.24, 24.47],
+    [42.1354, 24.7453],
   ];
   await prisma.tripLocationPoint.createMany({
     data: trackPoints.map((point, index) => ({
@@ -857,8 +908,7 @@ async function main(): Promise<void> {
   await seedPrices();
   await seedSystemRoles();
 
-  const seedDemo =
-    process.env['SEED_DEMO'] !== 'false' && process.env['NODE_ENV'] !== 'production';
+  const seedDemo = process.env['SEED_DEMO'] !== 'false' && process.env['NODE_ENV'] !== 'production';
   if (seedDemo) {
     console.log('Seeding demo organization…');
     await seedDemoOrganization();

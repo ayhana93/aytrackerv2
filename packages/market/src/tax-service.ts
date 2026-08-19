@@ -26,11 +26,7 @@ export interface TaxContext {
 }
 
 export type TaxTreatment =
-  | 'STANDARD_RATE'
-  | 'REVERSE_CHARGE'
-  | 'OUT_OF_SCOPE'
-  | 'ZERO_RATED'
-  | 'DEFERRED_TO_PROVIDER';
+  'STANDARD_RATE' | 'REVERSE_CHARGE' | 'OUT_OF_SCOPE' | 'ZERO_RATED' | 'DEFERRED_TO_PROVIDER';
 
 export interface TaxResult {
   readonly treatment: TaxTreatment;
@@ -44,10 +40,33 @@ export interface TaxResult {
 
 /** Standard VAT rates for EU member states. Data, not logic — updated by migration. */
 export const EU_VAT_RATES: Readonly<Record<CountryCode, number>> = {
-  AT: 20, BE: 21, BG: 20, HR: 25, CY: 19, CZ: 21, DK: 25, EE: 22,
-  FI: 25.5, FR: 20, DE: 19, GR: 24, HU: 27, IE: 23, IT: 22, LV: 21,
-  LT: 21, LU: 17, MT: 18, NL: 21, PL: 23, PT: 23, RO: 21, SK: 23,
-  SI: 22, ES: 21, SE: 25,
+  AT: 20,
+  BE: 21,
+  BG: 20,
+  HR: 25,
+  CY: 19,
+  CZ: 21,
+  DK: 25,
+  EE: 22,
+  FI: 25.5,
+  FR: 20,
+  DE: 19,
+  GR: 24,
+  HU: 27,
+  IE: 23,
+  IT: 22,
+  LV: 21,
+  LT: 21,
+  LU: 17,
+  MT: 18,
+  NL: 21,
+  PL: 23,
+  PT: 23,
+  RO: 21,
+  SK: 23,
+  SI: 22,
+  ES: 21,
+  SE: 25,
 };
 
 export function isEuCountry(country: CountryCode): boolean {

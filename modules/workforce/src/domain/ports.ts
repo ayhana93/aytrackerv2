@@ -1,5 +1,15 @@
-import type { OrganizationId, PositionId, QualificationId, SiteId, WorkerId } from '@aytracker/types';
-import type { EligibilityOverride, PositionRule, WorkerQualificationHolding } from './eligibility.js';
+import type {
+  OrganizationId,
+  PositionId,
+  QualificationId,
+  SiteId,
+  WorkerId,
+} from '@aytracker/types';
+import type {
+  EligibilityOverride,
+  PositionRule,
+  WorkerQualificationHolding,
+} from './eligibility.js';
 
 /**
  * Repository ports.
@@ -55,7 +65,10 @@ export interface WorkerRepository {
 export interface PositionRepository {
   findRule(organizationId: OrganizationId, positionId: PositionId): Promise<PositionRule | null>;
   /** Every active position at a site, with its rules — the input to the picker. */
-  listRulesForSite(organizationId: OrganizationId, siteId: SiteId): Promise<readonly PositionRule[]>;
+  listRulesForSite(
+    organizationId: OrganizationId,
+    siteId: SiteId,
+  ): Promise<readonly PositionRule[]>;
   findByQrToken(organizationId: OrganizationId, qrToken: string): Promise<PositionRule | null>;
 }
 

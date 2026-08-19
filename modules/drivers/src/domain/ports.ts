@@ -4,10 +4,7 @@ import type { AcceptedLocationPoint, PauseInterval, TripState, TripStatus } from
 
 export interface TripRepository {
   findById(organizationId: OrganizationId, tripId: TripId): Promise<TripState | null>;
-  findOpenForDriver(
-    organizationId: OrganizationId,
-    driverId: DriverId,
-  ): Promise<TripState | null>;
+  findOpenForDriver(organizationId: OrganizationId, driverId: DriverId): Promise<TripState | null>;
   create(input: {
     organizationId: OrganizationId;
     driverId: DriverId;
@@ -107,10 +104,7 @@ export interface TrackingEventRepository {
 
 export interface DriverVehicleAccess {
   /** The vehicle currently assigned to this driver, or null. Never client-supplied. */
-  currentVehicleId(
-    organizationId: OrganizationId,
-    driverId: DriverId,
-  ): Promise<VehicleId | null>;
+  currentVehicleId(organizationId: OrganizationId, driverId: DriverId): Promise<VehicleId | null>;
   /** Recorded when a trip closes, so odometer history stays consistent with the fleet module. */
   recordOdometer(input: {
     organizationId: OrganizationId;

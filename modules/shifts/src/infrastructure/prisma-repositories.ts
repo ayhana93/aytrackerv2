@@ -382,10 +382,7 @@ export class PrismaIdempotencyStore implements IdempotencyStore {
       if (existing.state === 'COMPLETED') {
         return { replayed: true, response: existing.responseBody };
       }
-      throw new ConflictError(
-        'idempotency.in_progress',
-        'This action is already being processed.',
-      );
+      throw new ConflictError('idempotency.in_progress', 'This action is already being processed.');
     }
 
     await this.prisma.idempotencyKey.create({
@@ -446,5 +443,7 @@ export class PrismaIdempotencyStore implements IdempotencyStore {
 
 /** Stable hash of a request body, so a replay with different content is detectable. */
 export function hashRequestBody(body: unknown): string {
-  return createHash('sha256').update(JSON.stringify(body ?? null)).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify(body ?? null))
+    .digest('hex');
 }

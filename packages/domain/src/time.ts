@@ -54,7 +54,14 @@ export function timezoneOffsetMinutes(instant: Date, timezone: TimezoneId): numb
   };
   // Intl renders hour 24 for midnight in some locales; normalize to 0.
   const hour = get('hour') % 24;
-  const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
+  const asUtc = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    hour,
+    get('minute'),
+    get('second'),
+  );
   return Math.round((asUtc - instant.getTime()) / 60_000);
 }
 
@@ -92,11 +99,7 @@ export function localMinuteOfDay(instant: Date, timezone: TimezoneId): number {
  * skipped hour when DST starts) resolve forward past the gap — the same choices the IANA
  * "compatible" disambiguation rule makes.
  */
-export function zonedTimeToUtc(
-  localDate: string,
-  minuteOfDay: number,
-  timezone: TimezoneId,
-): Date {
+export function zonedTimeToUtc(localDate: string, minuteOfDay: number, timezone: TimezoneId): Date {
   assertValidTimezone(timezone);
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
   if (!match) {
@@ -105,7 +108,9 @@ export function zonedTimeToUtc(
   const [, year, month, day] = match;
   const naiveUtc = Date.UTC(Number(year), Number(month) - 1, Number(day)) + minuteOfDay * 60_000;
 
-  const firstGuess = new Date(naiveUtc - timezoneOffsetMinutes(new Date(naiveUtc), timezone) * 60_000);
+  const firstGuess = new Date(
+    naiveUtc - timezoneOffsetMinutes(new Date(naiveUtc), timezone) * 60_000,
+  );
   const secondOffset = timezoneOffsetMinutes(firstGuess, timezone);
   return new Date(naiveUtc - secondOffset * 60_000);
 }
@@ -132,9 +137,7 @@ export function addDays(instant: Date, days: number): Date {
  * Used for break time: two overlapping break rows (a correction artefact, or a client that
  * fired twice) must not inflate the deduction.
  */
-export function mergedIntervalSeconds(
-  intervals: readonly { start: Date; end: Date }[],
-): number {
+export function mergedIntervalSeconds(intervals: readonly { start: Date; end: Date }[]): number {
   if (intervals.length === 0) return 0;
   const sorted = [...intervals]
     .filter((i) => i.end.getTime() > i.start.getTime())

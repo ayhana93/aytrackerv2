@@ -1,6 +1,16 @@
 import type { DatabaseClient } from '@aytracker/database';
-import type { OrganizationId, PositionId, QualificationId, SiteId, WorkerId } from '@aytracker/types';
-import type { PositionRule, WorkerQualificationHolding, EligibilityOverride } from '../domain/eligibility.js';
+import type {
+  OrganizationId,
+  PositionId,
+  QualificationId,
+  SiteId,
+  WorkerId,
+} from '@aytracker/types';
+import type {
+  PositionRule,
+  WorkerQualificationHolding,
+  EligibilityOverride,
+} from '../domain/eligibility.js';
 import type {
   EligibilityRepository,
   OrganizationPolicyRepository,
@@ -22,7 +32,10 @@ import type {
 export class PrismaWorkerRepository implements WorkerRepository {
   constructor(private readonly db: DatabaseClient) {}
 
-  async findById(organizationId: OrganizationId, workerId: WorkerId): Promise<WorkerSummary | null> {
+  async findById(
+    organizationId: OrganizationId,
+    workerId: WorkerId,
+  ): Promise<WorkerSummary | null> {
     const worker = await this.db.worker.findFirst({
       where: { id: workerId, organizationId, deletedAt: null },
       select: {

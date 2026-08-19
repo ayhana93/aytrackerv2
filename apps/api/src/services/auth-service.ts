@@ -76,12 +76,12 @@ export class AuthService {
     }
 
     const recentFailures = await this.countRecentFailures('USER', input.email, input.now);
-    const lockout = { failedAttempts: recentFailures.count, lockedUntil: recentFailures.lockedUntil };
+    const lockout = {
+      failedAttempts: recentFailures.count,
+      lockedUntil: recentFailures.lockedUntil,
+    };
     if (isLockedOut(lockout, input.now)) {
-      throw new RateLimitedError(
-        'auth.account_locked',
-        secondsUntilUnlock(lockout, input.now),
-      );
+      throw new RateLimitedError('auth.account_locked', secondsUntilUnlock(lockout, input.now));
     }
 
     const valid = await verifyPassword(user.passwordHash, input.password);
@@ -100,7 +100,10 @@ export class AuthService {
       // A valid user with no active membership can authenticate but has no tenant to act in.
       // Platform admins are the documented exception.
       if (!user.isPlatformAdmin) {
-        throw new ForbiddenError('auth.no_organization', 'This account has no active organization.');
+        throw new ForbiddenError(
+          'auth.no_organization',
+          'This account has no active organization.',
+        );
       }
       await this.recordAttempt({
         actorType: 'USER',
@@ -118,7 +121,10 @@ export class AuthService {
       };
     }
 
-    if (membership.organization.status === 'SUSPENDED' || membership.organization.status === 'CANCELLED') {
+    if (
+      membership.organization.status === 'SUSPENDED' ||
+      membership.organization.status === 'CANCELLED'
+    ) {
       throw new ForbiddenError(
         'auth.organization_suspended',
         'This organization is not currently active.',
@@ -160,7 +166,11 @@ export class AuthService {
       where: { slug: input.organizationSlug },
       select: { id: true, status: true },
     });
-    if (!organization || organization.status === 'CANCELLED' || organization.status === 'SUSPENDED') {
+    if (
+      !organization ||
+      organization.status === 'CANCELLED' ||
+      organization.status === 'SUSPENDED'
+    ) {
       await burnVerificationTime();
       throw GENERIC_FAILURE();
     }
@@ -264,7 +274,11 @@ export class AuthService {
       where: { slug: input.organizationSlug },
       select: { id: true, status: true },
     });
-    if (!organization || organization.status === 'CANCELLED' || organization.status === 'SUSPENDED') {
+    if (
+      !organization ||
+      organization.status === 'CANCELLED' ||
+      organization.status === 'SUSPENDED'
+    ) {
       await burnVerificationTime();
       throw GENERIC_FAILURE();
     }

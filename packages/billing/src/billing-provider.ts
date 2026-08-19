@@ -67,11 +67,27 @@ export interface InvoiceSummary {
 
 /** A provider webhook, already verified and normalized into our vocabulary. */
 export type BillingWebhookEvent =
-  | { readonly type: 'SUBSCRIPTION_UPDATED'; readonly subscription: ProviderSubscription; readonly customerExternalId: string }
+  | {
+      readonly type: 'SUBSCRIPTION_UPDATED';
+      readonly subscription: ProviderSubscription;
+      readonly customerExternalId: string;
+    }
   | { readonly type: 'SUBSCRIPTION_CANCELLED'; readonly subscriptionExternalId: string }
-  | { readonly type: 'PAYMENT_SUCCEEDED'; readonly subscriptionExternalId: string; readonly invoice: InvoiceSummary }
-  | { readonly type: 'PAYMENT_FAILED'; readonly subscriptionExternalId: string; readonly attemptCount: number }
-  | { readonly type: 'TRIAL_ENDING'; readonly subscriptionExternalId: string; readonly endsAt: Date }
+  | {
+      readonly type: 'PAYMENT_SUCCEEDED';
+      readonly subscriptionExternalId: string;
+      readonly invoice: InvoiceSummary;
+    }
+  | {
+      readonly type: 'PAYMENT_FAILED';
+      readonly subscriptionExternalId: string;
+      readonly attemptCount: number;
+    }
+  | {
+      readonly type: 'TRIAL_ENDING';
+      readonly subscriptionExternalId: string;
+      readonly endsAt: Date;
+    }
   | { readonly type: 'UNKNOWN'; readonly rawType: string };
 
 export interface BillingProvider {

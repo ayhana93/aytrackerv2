@@ -92,7 +92,11 @@ export function decideSampling(input: SamplingInput): SamplingDecision {
   }
 
   if (elapsed >= interval) {
-    return { shouldSend: true, reason: 'INTERVAL_ELAPSED', nextCheckSeconds: policy.minIntervalSeconds };
+    return {
+      shouldSend: true,
+      reason: 'INTERVAL_ELAPSED',
+      nextCheckSeconds: policy.minIntervalSeconds,
+    };
   }
 
   return {

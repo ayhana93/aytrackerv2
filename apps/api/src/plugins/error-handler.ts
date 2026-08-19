@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import fp from 'fastify-plugin';
 import { ZodError } from 'zod';
-import { DomainError, httpStatusForKind, isDomainError } from '@aytracker/domain';
+import { httpStatusForKind, isDomainError, type DomainError } from '@aytracker/domain';
 import { translateDatabaseError } from '@aytracker/database';
 
 /**

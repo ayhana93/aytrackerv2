@@ -103,7 +103,11 @@ export const FEATURE_DEFINITIONS: readonly FeatureDefinition[] = [
   { code: FEATURES.PRODUCTION, name: 'Production tracking', moduleCode: 'production' },
   { code: FEATURES.ADVANCED_REPORTS, name: 'Advanced reports', moduleCode: 'reporting' },
   { code: FEATURES.OFFLINE_MODE, name: 'Offline mode', moduleCode: 'shifts' },
-  { code: FEATURES.PRODUCTIVITY_ANALYTICS, name: 'Productivity analytics', moduleCode: 'reporting' },
+  {
+    code: FEATURES.PRODUCTIVITY_ANALYTICS,
+    name: 'Productivity analytics',
+    moduleCode: 'reporting',
+  },
   { code: FEATURES.DRIVER_PORTAL, name: 'Driver portal', moduleCode: 'drivers' },
   { code: FEATURES.FLEET_MANAGEMENT, name: 'Fleet management', moduleCode: 'fleet' },
   { code: FEATURES.GPS_TRACKING, name: 'GPS tracking', moduleCode: 'drivers' },

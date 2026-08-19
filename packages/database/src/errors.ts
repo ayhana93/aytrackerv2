@@ -1,4 +1,4 @@
-import { ConflictError, DomainError, NotFoundError, ValidationError } from '@aytracker/domain';
+import { ConflictError, NotFoundError, ValidationError, type DomainError } from '@aytracker/domain';
 import { isForeignKeyViolation, isNotFound, violatedConstraintName } from './client.js';
 
 /**
@@ -70,7 +70,10 @@ const CONSTRAINT_TO_ERROR: Readonly<Record<string, () => DomainError>> = {
 
 function crossTenant(): DomainError {
   // Surfaced as NOT_FOUND at the HTTP edge; the specific code is what the security log records.
-  return new NotFoundError('tenant.cross_reference', 'Referenced record is in another organization.');
+  return new NotFoundError(
+    'tenant.cross_reference',
+    'Referenced record is in another organization.',
+  );
 }
 
 /**

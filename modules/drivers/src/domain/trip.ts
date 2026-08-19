@@ -171,7 +171,11 @@ export function validateLocationBatch(input: {
       rejected += 1;
       continue;
     }
-    if (point.accuracyMeters !== undefined && point.accuracyMeters !== null && point.accuracyMeters < 0) {
+    if (
+      point.accuracyMeters !== undefined &&
+      point.accuracyMeters !== null &&
+      point.accuracyMeters < 0
+    ) {
       rejected += 1;
       continue;
     }

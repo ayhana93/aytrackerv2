@@ -2,7 +2,12 @@ import type { DatabaseClient, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
 import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
-import type { AcceptedLocationPoint, PauseInterval, TripState, TripStatus } from '../domain/trip.js';
+import type {
+  AcceptedLocationPoint,
+  PauseInterval,
+  TripState,
+  TripStatus,
+} from '../domain/trip.js';
 import type {
   DriverTransactionRunner,
   DriverUnitOfWork,
@@ -319,10 +324,7 @@ export class PrismaTrackingEventRepository implements TrackingEventRepository {
     >;
   }
 
-  async latestState(
-    organizationId: OrganizationId,
-    tripId: TripId,
-  ): Promise<TrackingState | null> {
+  async latestState(organizationId: OrganizationId, tripId: TripId): Promise<TrackingState | null> {
     const event = await this.db.trackingEvent.findFirst({
       where: { organizationId, tripId },
       select: { state: true },

@@ -211,9 +211,10 @@ describe('session validation', () => {
   });
 
   it('rejects an expired session', () => {
-    expect(
-      validateSession({ ...base, expiresAt: new Date('2026-03-10T08:00:00Z') }, now),
-    ).toEqual({ valid: false, reason: 'EXPIRED' });
+    expect(validateSession({ ...base, expiresAt: new Date('2026-03-10T08:00:00Z') }, now)).toEqual({
+      valid: false,
+      reason: 'EXPIRED',
+    });
   });
 
   it('rejects a revoked session', () => {

@@ -16,7 +16,11 @@ describe('computeShiftDuration', () => {
       actualStart: at('2026-03-10T06:00:00Z'),
       actualEnd: at('2026-03-10T14:00:00Z'),
       breaks: [
-        { type: 'MEAL', startedAt: at('2026-03-10T10:00:00Z'), endedAt: at('2026-03-10T10:30:00Z') },
+        {
+          type: 'MEAL',
+          startedAt: at('2026-03-10T10:00:00Z'),
+          endedAt: at('2026-03-10T10:30:00Z'),
+        },
       ],
     });
 
@@ -31,8 +35,16 @@ describe('computeShiftDuration', () => {
       actualStart: at('2026-03-10T06:00:00Z'),
       actualEnd: at('2026-03-10T14:00:00Z'),
       breaks: [
-        { type: 'PAID', startedAt: at('2026-03-10T09:00:00Z'), endedAt: at('2026-03-10T09:15:00Z') },
-        { type: 'TECHNICAL', startedAt: at('2026-03-10T11:00:00Z'), endedAt: at('2026-03-10T11:10:00Z') },
+        {
+          type: 'PAID',
+          startedAt: at('2026-03-10T09:00:00Z'),
+          endedAt: at('2026-03-10T09:15:00Z'),
+        },
+        {
+          type: 'TECHNICAL',
+          startedAt: at('2026-03-10T11:00:00Z'),
+          endedAt: at('2026-03-10T11:10:00Z'),
+        },
       ],
     });
 
@@ -50,8 +62,16 @@ describe('computeShiftDuration', () => {
       actualStart: at('2026-03-10T06:00:00Z'),
       actualEnd: at('2026-03-10T14:00:00Z'),
       breaks: [
-        { type: 'UNPAID', startedAt: at('2026-03-10T10:00:00Z'), endedAt: at('2026-03-10T10:30:00Z') },
-        { type: 'UNPAID', startedAt: at('2026-03-10T10:15:00Z'), endedAt: at('2026-03-10T10:45:00Z') },
+        {
+          type: 'UNPAID',
+          startedAt: at('2026-03-10T10:00:00Z'),
+          endedAt: at('2026-03-10T10:30:00Z'),
+        },
+        {
+          type: 'UNPAID',
+          startedAt: at('2026-03-10T10:15:00Z'),
+          endedAt: at('2026-03-10T10:45:00Z'),
+        },
       ],
     });
 
@@ -76,7 +96,11 @@ describe('computeShiftDuration', () => {
       actualStart: at('2026-03-10T06:00:00Z'),
       actualEnd: at('2026-03-10T14:00:00Z'),
       breaks: [
-        { type: 'UNPAID', startedAt: at('2026-03-10T05:00:00Z'), endedAt: at('2026-03-10T15:00:00Z') },
+        {
+          type: 'UNPAID',
+          startedAt: at('2026-03-10T05:00:00Z'),
+          endedAt: at('2026-03-10T15:00:00Z'),
+        },
       ],
     });
 
@@ -189,7 +213,11 @@ describe('auto-close', () => {
   it('closes at the cap, not at the time the job happened to run', () => {
     const start = at('2026-03-10T06:00:00Z');
     expect(
-      shouldAutoClose({ actualStart: start, now: at('2026-03-11T03:00:00Z'), maxShiftDurationMinutes: 960 }),
+      shouldAutoClose({
+        actualStart: start,
+        now: at('2026-03-11T03:00:00Z'),
+        maxShiftDurationMinutes: 960,
+      }),
     ).toBe(true);
     expect(autoCloseAt(start, 960).toISOString()).toBe('2026-03-10T22:00:00.000Z');
   });

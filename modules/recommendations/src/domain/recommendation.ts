@@ -5,13 +5,7 @@ import { ForbiddenError, ValidationError } from '@aytracker/domain';
  */
 
 export type RecommendationCategory =
-  | 'NEW_FEATURE'
-  | 'IMPROVEMENT'
-  | 'BUG'
-  | 'INTEGRATION'
-  | 'REPORTING'
-  | 'DRIVER_FLEET'
-  | 'OTHER';
+  'NEW_FEATURE' | 'IMPROVEMENT' | 'BUG' | 'INTEGRATION' | 'REPORTING' | 'DRIVER_FLEET' | 'OTHER';
 
 export type RecommendationPriority = 'NICE_TO_HAVE' | 'IMPORTANT' | 'CRITICAL';
 
@@ -39,10 +33,7 @@ export function assertValidSubmission(input: { title: string; description: strin
       `Title must be between ${MIN_TITLE_LENGTH} and ${MAX_TITLE_LENGTH} characters.`,
     );
   }
-  if (
-    description.length < MIN_DESCRIPTION_LENGTH ||
-    description.length > MAX_DESCRIPTION_LENGTH
-  ) {
+  if (description.length < MIN_DESCRIPTION_LENGTH || description.length > MAX_DESCRIPTION_LENGTH) {
     throw new ValidationError(
       'recommendation.invalid_description',
       `Description must be between ${MIN_DESCRIPTION_LENGTH} and ${MAX_DESCRIPTION_LENGTH} characters.`,
@@ -68,10 +59,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<RecommendationStatus, readonly Recomm
     DUPLICATE: [],
   };
 
-export function assertStatusTransition(
-  from: RecommendationStatus,
-  to: RecommendationStatus,
-): void {
+export function assertStatusTransition(from: RecommendationStatus, to: RecommendationStatus): void {
   if (!(ALLOWED_TRANSITIONS[from] ?? []).includes(to)) {
     throw new ValidationError(
       'recommendation.invalid_transition',

@@ -104,7 +104,10 @@ export const createWorkerSchema = z.object({
   siteId: uuidSchema.nullable().default(null),
   preferredLocale: localeSchema.nullable().optional(),
   /** Optional initial PIN. Omitted means PIN login is disabled until one is set. */
-  pin: z.string().regex(/^\d{4,8}$/).optional(),
+  pin: z
+    .string()
+    .regex(/^\d{4,8}$/)
+    .optional(),
 });
 
 export const createPositionSchema = z.object({

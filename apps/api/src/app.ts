@@ -22,10 +22,7 @@ import type { AppServices } from './services/container.js';
  * a port — which is what makes the tenant-isolation integration tests cheap enough to run on
  * every commit.
  */
-export async function buildApp(
-  config: AppConfig,
-  services: AppServices,
-): Promise<FastifyInstance> {
+export async function buildApp(config: AppConfig, services: AppServices): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
       level: config.env.LOG_LEVEL,

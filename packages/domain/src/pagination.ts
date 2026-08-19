@@ -21,7 +21,10 @@ export function normalizePageRequest(input: {
     );
   }
   if (!Number.isInteger(offset) || offset < 0) {
-    throw new ValidationError('pagination.invalid_offset', 'offset must be a non-negative integer.');
+    throw new ValidationError(
+      'pagination.invalid_offset',
+      'offset must be a non-negative integer.',
+    );
   }
   return { limit, offset };
 }

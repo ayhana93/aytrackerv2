@@ -1,10 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
-import {
-  assertActorType,
-  assertPermission,
-  type Permission,
-} from '@aytracker/auth';
+import { assertActorType, assertPermission, type Permission } from '@aytracker/auth';
 import type { Entitlements, FeatureCode } from '@aytracker/billing';
 import type { ActorContext } from '@aytracker/types';
 import type { EntitlementService } from '../services/entitlement-service.js';

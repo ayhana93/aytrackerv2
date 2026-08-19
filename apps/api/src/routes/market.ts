@@ -26,9 +26,10 @@ export function marketRoutes(services: AppServices): FastifyPluginAsync {
             marketSignalsFromRequest({
               headers: request.headers as Record<string, string | string[] | undefined>,
               query: { market: query.market },
-              geoHeaderName: services.config.env.MARKET_GEOLOCATION_PROVIDER === 'cloudflare'
-                ? 'cf-ipcountry'
-                : null,
+              geoHeaderName:
+                services.config.env.MARKET_GEOLOCATION_PROVIDER === 'cloudflare'
+                  ? 'cf-ipcountry'
+                  : null,
             }),
           );
 
@@ -57,9 +58,10 @@ export function marketRoutes(services: AppServices): FastifyPluginAsync {
             marketSignalsFromRequest({
               headers: request.headers as Record<string, string | string[] | undefined>,
               query: { market: query.market },
-              geoHeaderName: services.config.env.MARKET_GEOLOCATION_PROVIDER === 'cloudflare'
-                ? 'cf-ipcountry'
-                : null,
+              geoHeaderName:
+                services.config.env.MARKET_GEOLOCATION_PROVIDER === 'cloudflare'
+                  ? 'cf-ipcountry'
+                  : null,
             }),
           );
 

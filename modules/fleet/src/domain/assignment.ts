@@ -48,11 +48,9 @@ export function assertCanAssign(input: {
     );
   }
   if (input.driverOpenAssignment) {
-    throw new ConflictError(
-      'fleet.driver_already_assigned',
-      'This driver already has a vehicle.',
-      { details: { assignmentId: input.driverOpenAssignment.id } },
-    );
+    throw new ConflictError('fleet.driver_already_assigned', 'This driver already has a vehicle.', {
+      details: { assignmentId: input.driverOpenAssignment.id },
+    });
   }
 }
 

@@ -24,11 +24,7 @@ export function formatTime(instant: Date, locale: LocaleCode, timezone: Timezone
   }).format(instant);
 }
 
-export function formatDateTime(
-  instant: Date,
-  locale: LocaleCode,
-  timezone: TimezoneId,
-): string {
+export function formatDateTime(instant: Date, locale: LocaleCode, timezone: TimezoneId): string {
   return new Intl.DateTimeFormat(locale, {
     dateStyle: 'medium',
     timeStyle: 'short',

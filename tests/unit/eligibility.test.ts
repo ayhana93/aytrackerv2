@@ -106,7 +106,12 @@ describe('resolveEligibility', () => {
     it('an explicit ALLOW grants access without the qualification', () => {
       const result = decide({
         overrides: [
-          { positionId: 'position-1' as PositionId, effect: 'ALLOW', validFrom: null, validTo: null },
+          {
+            positionId: 'position-1' as PositionId,
+            effect: 'ALLOW',
+            validFrom: null,
+            validTo: null,
+          },
         ],
       });
       expect(result.allowed).toBe(true);
@@ -117,7 +122,12 @@ describe('resolveEligibility', () => {
       const result = decide({
         held: [{ qualificationId: EXT_QUAL, expiresAt: null }],
         overrides: [
-          { positionId: 'position-1' as PositionId, effect: 'DENY', validFrom: null, validTo: null },
+          {
+            positionId: 'position-1' as PositionId,
+            effect: 'DENY',
+            validFrom: null,
+            validTo: null,
+          },
         ],
       });
       expect(result.allowed).toBe(false);
@@ -127,8 +137,18 @@ describe('resolveEligibility', () => {
     it('an explicit DENY beats an explicit ALLOW', () => {
       const result = decide({
         overrides: [
-          { positionId: 'position-1' as PositionId, effect: 'ALLOW', validFrom: null, validTo: null },
-          { positionId: 'position-1' as PositionId, effect: 'DENY', validFrom: null, validTo: null },
+          {
+            positionId: 'position-1' as PositionId,
+            effect: 'ALLOW',
+            validFrom: null,
+            validTo: null,
+          },
+          {
+            positionId: 'position-1' as PositionId,
+            effect: 'DENY',
+            validFrom: null,
+            validTo: null,
+          },
         ],
       });
       expect(result.allowed).toBe(false);
@@ -169,7 +189,12 @@ describe('resolveEligibility', () => {
       const result = decide({
         held: [{ qualificationId: EXT_QUAL, expiresAt: null }],
         overrides: [
-          { positionId: 'other-position' as PositionId, effect: 'DENY', validFrom: null, validTo: null },
+          {
+            positionId: 'other-position' as PositionId,
+            effect: 'DENY',
+            validFrom: null,
+            validTo: null,
+          },
         ],
       });
       expect(result.allowed).toBe(true);
@@ -208,7 +233,12 @@ describe('resolveEligibility', () => {
       const result = decide({
         position: { status: 'ARCHIVED' },
         overrides: [
-          { positionId: 'position-1' as PositionId, effect: 'ALLOW', validFrom: null, validTo: null },
+          {
+            positionId: 'position-1' as PositionId,
+            effect: 'ALLOW',
+            validFrom: null,
+            validTo: null,
+          },
         ],
       });
       expect(result.allowed).toBe(false);
@@ -223,8 +253,16 @@ describe('eligiblePositions', () => {
       position({ positionId: 'm1' as PositionId, requiredQualificationIds: [EXT_QUAL] }),
       position({ positionId: 'm2' as PositionId, requiredQualificationIds: [EXT_QUAL] }),
       position({ positionId: 'paint' as PositionId, requiredQualificationIds: [PAINT_QUAL] }),
-      position({ positionId: 'pack' as PositionId, changeMode: 'INSTANT', requiredQualificationIds: [] }),
-      position({ positionId: 'closed' as PositionId, status: 'INACTIVE', requiredQualificationIds: [] }),
+      position({
+        positionId: 'pack' as PositionId,
+        changeMode: 'INSTANT',
+        requiredQualificationIds: [],
+      }),
+      position({
+        positionId: 'closed' as PositionId,
+        status: 'INACTIVE',
+        requiredQualificationIds: [],
+      }),
     ];
 
     const available = eligiblePositions({

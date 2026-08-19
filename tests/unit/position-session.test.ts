@@ -106,9 +106,24 @@ describe('planSessionClose', () => {
 describe('summarizeByPosition', () => {
   it('totals time per position across repeated visits', () => {
     const sessions: PositionSessionState[] = [
-      session({ id: 's1' as PositionSessionId, positionId: 'm1' as PositionId, startedAt: at('2026-03-10T10:00:00Z'), endedAt: at('2026-03-10T10:30:00Z') }),
-      session({ id: 's2' as PositionSessionId, positionId: 'm2' as PositionId, startedAt: at('2026-03-10T10:30:00Z'), endedAt: at('2026-03-10T12:00:00Z') }),
-      session({ id: 's3' as PositionSessionId, positionId: 'm1' as PositionId, startedAt: at('2026-03-10T12:00:00Z'), endedAt: at('2026-03-10T12:15:00Z') }),
+      session({
+        id: 's1' as PositionSessionId,
+        positionId: 'm1' as PositionId,
+        startedAt: at('2026-03-10T10:00:00Z'),
+        endedAt: at('2026-03-10T10:30:00Z'),
+      }),
+      session({
+        id: 's2' as PositionSessionId,
+        positionId: 'm2' as PositionId,
+        startedAt: at('2026-03-10T10:30:00Z'),
+        endedAt: at('2026-03-10T12:00:00Z'),
+      }),
+      session({
+        id: 's3' as PositionSessionId,
+        positionId: 'm1' as PositionId,
+        startedAt: at('2026-03-10T12:00:00Z'),
+        endedAt: at('2026-03-10T12:15:00Z'),
+      }),
     ];
 
     const totals = summarizeByPosition(sessions, at('2026-03-10T14:00:00Z'));
@@ -128,9 +143,21 @@ describe('summarizeByPosition', () => {
 describe('analyzeSwitching', () => {
   it('describes switching without judging it', () => {
     const sessions: PositionSessionState[] = [
-      session({ id: 'a' as PositionSessionId, startedAt: at('2026-03-10T10:00:00Z'), endedAt: at('2026-03-10T10:02:00Z') }),
-      session({ id: 'b' as PositionSessionId, startedAt: at('2026-03-10T10:02:00Z'), endedAt: at('2026-03-10T10:04:00Z') }),
-      session({ id: 'c' as PositionSessionId, startedAt: at('2026-03-10T10:04:00Z'), endedAt: at('2026-03-10T12:00:00Z') }),
+      session({
+        id: 'a' as PositionSessionId,
+        startedAt: at('2026-03-10T10:00:00Z'),
+        endedAt: at('2026-03-10T10:02:00Z'),
+      }),
+      session({
+        id: 'b' as PositionSessionId,
+        startedAt: at('2026-03-10T10:02:00Z'),
+        endedAt: at('2026-03-10T10:04:00Z'),
+      }),
+      session({
+        id: 'c' as PositionSessionId,
+        startedAt: at('2026-03-10T10:04:00Z'),
+        endedAt: at('2026-03-10T12:00:00Z'),
+      }),
     ];
 
     const pattern = analyzeSwitching(sessions, at('2026-03-10T12:00:00Z'));
@@ -156,7 +183,10 @@ describe('validateCorrection', () => {
   const shiftEnd = at('2026-03-10T14:00:00Z');
 
   const base = {
-    session: session({ startedAt: at('2026-03-10T10:00:00Z'), endedAt: at('2026-03-10T11:00:00Z') }),
+    session: session({
+      startedAt: at('2026-03-10T10:00:00Z'),
+      endedAt: at('2026-03-10T11:00:00Z'),
+    }),
     siblingSessions: [] as PositionSessionState[],
     shiftStart,
     shiftEnd,

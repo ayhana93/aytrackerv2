@@ -85,9 +85,7 @@ export function relativeLuminance(hexColor: string): number {
   const { r, g, b } = hexToRgb(hexColor);
   const channel = (value: number): number => {
     const normalized = value / 255;
-    return normalized <= 0.03928
-      ? normalized / 12.92
-      : ((normalized + 0.055) / 1.055) ** 2.4;
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
   };
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 }
@@ -112,7 +110,11 @@ export function readableForeground(backgroundHex: string): string {
     : '#000000';
 }
 
-export function meetsContrastAA(foreground: string, background: string, largeText = false): boolean {
+export function meetsContrastAA(
+  foreground: string,
+  background: string,
+  largeText = false,
+): boolean {
   return contrastRatio(foreground, background) >= (largeText ? 3 : 4.5);
 }
 

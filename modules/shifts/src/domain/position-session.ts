@@ -77,9 +77,7 @@ export function planPositionChange(input: {
       ? {
           sessionId: currentSession.id,
           endedAt: at,
-          durationSeconds: Math.round(
-            (at.getTime() - currentSession.startedAt.getTime()) / 1000,
-          ),
+          durationSeconds: Math.round((at.getTime() - currentSession.startedAt.getTime()) / 1000),
         }
       : null,
     opening: { positionId: targetPositionId, startedAt: at, source },
@@ -209,11 +207,7 @@ export function validateCorrection(input: {
       'A session cannot begin before its shift.',
     );
   }
-  if (
-    input.shiftEnd &&
-    input.newEndedAt &&
-    input.newEndedAt.getTime() > input.shiftEnd.getTime()
-  ) {
+  if (input.shiftEnd && input.newEndedAt && input.newEndedAt.getTime() > input.shiftEnd.getTime()) {
     throw new PreconditionFailedError(
       'correction.after_shift_end',
       'A session cannot end after its shift.',

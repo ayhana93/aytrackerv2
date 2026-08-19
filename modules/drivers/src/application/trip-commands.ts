@@ -143,7 +143,12 @@ export class TripCommandService {
     untrackedSeconds: number;
   }> {
     const result = await this.transactions.run(input.organizationId, async (uow) => {
-      const trip = await this.requireOwnTrip(uow, input.organizationId, input.driverId, input.tripId);
+      const trip = await this.requireOwnTrip(
+        uow,
+        input.organizationId,
+        input.driverId,
+        input.tripId,
+      );
       assertTransition(trip.status, 'COMPLETED');
       if (!trip.startedAt) {
         throw new PreconditionFailedError('trip.not_started', 'This trip has no start time.');

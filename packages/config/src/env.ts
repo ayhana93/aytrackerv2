@@ -14,14 +14,12 @@ const booleanish = z
   .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
   .transform((value) => value === true || value === 'true' || value === '1');
 
-const csv = z
-  .string()
-  .transform((value) =>
-    value
-      .split(',')
-      .map((part) => part.trim())
-      .filter(Boolean),
-  );
+const csv = z.string().transform((value) =>
+  value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean),
+);
 
 export const serverEnvSchema = z
   .object({

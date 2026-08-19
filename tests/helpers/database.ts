@@ -120,7 +120,12 @@ export interface TestTenant {
   readonly organizationId: string;
   readonly siteId: string;
   readonly workAreaId: string;
-  readonly positionIds: { machine1: string; machine2: string; packaging: string; restricted: string };
+  readonly positionIds: {
+    machine1: string;
+    machine2: string;
+    packaging: string;
+    restricted: string;
+  };
   readonly qualificationIds: { extrusion: string; cutting: string };
   readonly workerId: string;
   readonly otherWorkerId: string;

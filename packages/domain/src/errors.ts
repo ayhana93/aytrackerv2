@@ -77,10 +77,15 @@ export class PreconditionFailedError extends DomainError {
 
 export class EntitlementRequiredError extends DomainError {
   constructor(featureCode: string, options?: DomainErrorOptions) {
-    super('ENTITLEMENT_REQUIRED', 'entitlement.required', `Feature ${featureCode} is not enabled.`, {
-      ...options,
-      details: { featureCode, ...options?.details },
-    });
+    super(
+      'ENTITLEMENT_REQUIRED',
+      'entitlement.required',
+      `Feature ${featureCode} is not enabled.`,
+      {
+        ...options,
+        details: { featureCode, ...options?.details },
+      },
+    );
   }
 }
 

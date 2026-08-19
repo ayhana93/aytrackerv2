@@ -574,6 +574,9 @@ importers:
       '@aytracker/tracking':
         specifier: workspace:*
         version: link:../packages/tracking
+      '@aytracker/types':
+        specifier: workspace:*
+        version: link:../packages/types
       '@aytracker/ui':
         specifier: workspace:*
         version: link:../packages/ui
@@ -583,6 +586,9 @@ importers:
       '@playwright/test':
         specifier: ^1.49.1
         version: 1.62.1
+      fastify:
+        specifier: ^5.2.1
+        version: 5.12.1
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

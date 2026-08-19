@@ -136,7 +136,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await app.close();
+  // Guarded: if beforeAll failed (no database, say), `app` is undefined and an unguarded close
+  // would replace the real error with a confusing TypeError.
+  await app?.close();
   await disconnectTestClient();
 });
 
@@ -266,9 +268,11 @@ describe('a driver cannot read another driver’s trips', () => {
       data: {
         organizationId: tenant.organizationId,
         driverId: tenant.otherDriverId,
-        vehicleId: (await prisma.vehicle.findFirstOrThrow({
-          where: { organizationId: tenant.organizationId, registrationNumber: 'TENANT-API-002' },
-        })).id,
+        vehicleId: (
+          await prisma.vehicle.findFirstOrThrow({
+            where: { organizationId: tenant.organizationId, registrationNumber: 'TENANT-API-002' },
+          })
+        ).id,
         status: 'ACTIVE',
         startedAt: new Date(),
       },
@@ -495,7 +499,9 @@ describe('worker position picker', () => {
       headers: { cookie: worker.cookies },
     });
 
-    const offered = response.json().availablePositions.map((entry: { positionId: string }) => entry.positionId);
+    const offered = response
+      .json()
+      .availablePositions.map((entry: { positionId: string }) => entry.positionId);
     expect(offered).toContain(tenant.positionIds.machine1);
     expect(offered).toContain(tenant.positionIds.packaging);
     expect(offered).not.toContain(tenant.positionIds.restricted);

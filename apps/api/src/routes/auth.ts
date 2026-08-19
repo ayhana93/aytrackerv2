@@ -1,9 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import {
-  CSRF_COOKIE_NAME,
-  SESSION_COOKIE_NAME,
-  sessionCookieOptions,
-} from '@aytracker/auth';
+import { CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, sessionCookieOptions } from '@aytracker/auth';
 import { adminLoginSchema, driverLoginSchema, workerLoginSchema } from '@aytracker/validation';
 import type { AppServices } from '../services/container.js';
 

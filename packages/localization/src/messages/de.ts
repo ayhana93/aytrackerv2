@@ -45,8 +45,10 @@ export const de: MessageCatalog = {
   'position.confirm_change': 'Von {from} zu {to} wechseln?',
   'position.changed': 'Arbeitsplatz gewechselt',
   'position.not_eligible': 'Sie sind diesem Arbeitsplatz derzeit nicht zugeordnet.',
-  'position.qualification_required': 'Dieser Arbeitsplatz erfordert eine Qualifikation, die Sie nicht haben.',
-  'position.supervisor_approval_required': 'Dieser Arbeitsplatz erfordert eine Freigabe durch den Vorgesetzten.',
+  'position.qualification_required':
+    'Dieser Arbeitsplatz erfordert eine Qualifikation, die Sie nicht haben.',
+  'position.supervisor_approval_required':
+    'Dieser Arbeitsplatz erfordert eine Freigabe durch den Vorgesetzten.',
   'position.inactive': 'Dieser Arbeitsplatz wird derzeit nicht genutzt.',
   'position.history': 'Arbeitsplatzverlauf',
   'position.scan_qr': 'Arbeitsplatz-Code scannen',
@@ -122,7 +124,8 @@ export const de: MessageCatalog = {
   'entitlement.required': 'Diese Funktion ist in Ihrem aktuellen Tarif nicht enthalten.',
 
   'error.generic': 'Etwas ist schiefgelaufen. Bitte erneut versuchen.',
-  'error.network': 'Keine Verbindung. Ihre Änderungen sind gespeichert und werden automatisch synchronisiert.',
+  'error.network':
+    'Keine Verbindung. Ihre Änderungen sind gespeichert und werden automatisch synchronisiert.',
   'error.not_found': 'Nicht gefunden.',
   'error.conflict': 'Das wurde bereits ausgeführt.',
   'error.rate_limited': 'Zu viele Anfragen. Bitte einen Moment warten.',

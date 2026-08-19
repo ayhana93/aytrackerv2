@@ -106,7 +106,9 @@ describe('timezones', () => {
     expect(localDateString(new Date('2026-03-10T22:30:00Z'), 'Europe/Sofia')).toBe('2026-03-11');
     expect(localDateString(new Date('2026-03-10T22:30:00Z'), 'UTC')).toBe('2026-03-10');
     // …and still the previous day in New York.
-    expect(localDateString(new Date('2026-03-11T02:30:00Z'), 'America/New_York')).toBe('2026-03-10');
+    expect(localDateString(new Date('2026-03-11T02:30:00Z'), 'America/New_York')).toBe(
+      '2026-03-10',
+    );
   });
 
   it('gives the local minute of day', () => {

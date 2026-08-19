@@ -280,7 +280,12 @@ describe('PricingCatalog', () => {
 
   it('throws when a market has no price for a plan', () => {
     expect(() =>
-      catalog.requireSellable({ marketCode: 'US', planCode: 'starter', interval: 'MONTHLY', at: now }),
+      catalog.requireSellable({
+        marketCode: 'US',
+        planCode: 'starter',
+        interval: 'MONTHLY',
+        at: now,
+      }),
     ).toThrowError(/no active price/i);
   });
 
