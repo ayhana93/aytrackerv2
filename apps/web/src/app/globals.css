@@ -1,52 +1,22 @@
 /*
- * Temporary development styling only.
+ * App-level styling.
  *
- * The visual design of AYtracker has not been chosen yet — see docs/architecture.md § design
- * workflow. This file exists so the wireframe routes are legible while the domain is built, and
- * will be replaced entirely once a design reference is provided. Nothing here should be treated
- * as a design decision.
+ * The design system lives in `@aytracker/ui/styles.css`, imported ahead of this file. Anything
+ * here is layout glue for a specific route — if a rule would be useful on a second screen, it
+ * belongs in the design system instead.
  */
 
-:root {
-  --ay-space: 8px;
-  color-scheme: light dark;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
-  line-height: 1.5;
-  background: var(--ay-color-surface, #ffffff);
-  color: var(--ay-color-surface-foreground, #0f172a);
-}
-
-main {
-  max-width: 960px;
+.ay-page {
+  max-width: var(--ay-content-max-width);
   margin: 0 auto;
-  padding: calc(var(--ay-space) * 4);
+  padding: var(--ay-space-8) var(--ay-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ay-space-6);
 }
 
-h1,
-h2 {
-  line-height: 1.25;
-}
-
-code {
-  font-family: ui-monospace, 'SFMono-Regular', monospace;
-  font-size: 0.9em;
-}
-
-.placeholder-notice {
-  border: 1px dashed currentColor;
-  border-radius: 6px;
-  padding: calc(var(--ay-space) * 2);
-  opacity: 0.85;
+.ay-page-grid {
+  display: grid;
+  gap: var(--ay-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
 }

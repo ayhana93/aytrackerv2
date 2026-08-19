@@ -2,7 +2,13 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  transpilePackages: ['@aytracker/ui', '@aytracker/localization', '@aytracker/types'],
+  transpilePackages: [
+    '@aytracker/ui',
+    '@aytracker/localization',
+    '@aytracker/types',
+    '@aytracker/tracking',
+    '@aytracker/tracking-client',
+  ],
   async headers() {
     return [
       {

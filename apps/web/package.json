@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@aytracker/localization": "workspace:*",
+    "@aytracker/tracking": "workspace:*",
+    "@aytracker/tracking-client": "workspace:*",
     "@aytracker/types": "workspace:*",
     "@aytracker/ui": "workspace:*",
     "next": "^15.1.6",

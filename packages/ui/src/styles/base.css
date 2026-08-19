@@ -1,0 +1,620 @@
+/*
+ * The design system, as CSS.
+ *
+ * Every value here is a token from `packages/ui/src/tokens`, applied to the document by
+ * `buildThemeVariables`. Nothing in this file contains a literal colour, duration or easing —
+ * swapping the theme or a customer's brand changes the variables, not the rules.
+ *
+ * Written as classes rather than CSS-in-JS on purpose: these animations run off the main
+ * thread, which matters on a five-year-old factory phone that is also decoding a map.
+ */
+
+/* ===========================================================================
+   THEME
+   =========================================================================== */
+
+/*
+ * Light is the default, and dark is applied by `data-theme` rather than only by a media query.
+ * A driver who has chosen light in a dark cab must get light — the OS preference is a default,
+ * not an override.
+ */
+:root {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* ===========================================================================
+   RESET
+   =========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* Anchors below sticky chrome land in the right place. */
+  scroll-padding-top: calc(var(--ay-space-16, 4rem));
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--ay-font);
+  font-size: var(--ay-type-body-size);
+  line-height: var(--ay-type-body-leading);
+  letter-spacing: var(--ay-type-body-tracking);
+  background: var(--ay-bg);
+  color: var(--ay-text);
+  -webkit-font-smoothing: antialiased;
+  /* The worker portal is a full-screen app, not a document. Rubber-banding the whole page over
+     a fixed tab bar looks broken. */
+  overscroll-behavior-y: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--ay-accent);
+  text-decoration: none;
+}
+
+/*
+ * A visible, consistent focus ring — but only for keyboard users. `:focus-visible` keeps it off
+ * a gloved thumb tap while guaranteeing it for anyone navigating by keyboard.
+ */
+:focus-visible {
+  outline: 2px solid var(--ay-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--ay-radius-sm);
+}
+
+/* ===========================================================================
+   TYPOGRAPHY
+   =========================================================================== */
+
+.ay-display,
+.ay-metric,
+.ay-h1,
+.ay-h2,
+.ay-h3,
+.ay-small,
+.ay-caption,
+.ay-overline {
+  margin: 0;
+}
+
+.ay-display {
+  font-size: var(--ay-type-display-size);
+  line-height: var(--ay-type-display-leading);
+  letter-spacing: var(--ay-type-display-tracking);
+  font-weight: var(--ay-type-display-weight);
+}
+.ay-metric {
+  font-size: var(--ay-type-metric-size);
+  line-height: var(--ay-type-metric-leading);
+  letter-spacing: var(--ay-type-metric-tracking);
+  font-weight: var(--ay-type-metric-weight);
+}
+.ay-h1 {
+  font-size: var(--ay-type-h1-size);
+  line-height: var(--ay-type-h1-leading);
+  letter-spacing: var(--ay-type-h1-tracking);
+  font-weight: var(--ay-type-h1-weight);
+}
+.ay-h2 {
+  font-size: var(--ay-type-h2-size);
+  line-height: var(--ay-type-h2-leading);
+  letter-spacing: var(--ay-type-h2-tracking);
+  font-weight: var(--ay-type-h2-weight);
+}
+.ay-h3 {
+  font-size: var(--ay-type-h3-size);
+  line-height: var(--ay-type-h3-leading);
+  letter-spacing: var(--ay-type-h3-tracking);
+  font-weight: var(--ay-type-h3-weight);
+}
+.ay-small {
+  font-size: var(--ay-type-small-size);
+  line-height: var(--ay-type-small-leading);
+  letter-spacing: var(--ay-type-small-tracking);
+}
+.ay-caption {
+  font-size: var(--ay-type-caption-size);
+  line-height: var(--ay-type-caption-leading);
+  letter-spacing: var(--ay-type-caption-tracking);
+  font-weight: var(--ay-type-caption-weight);
+}
+.ay-overline {
+  font-size: var(--ay-type-overline-size);
+  line-height: var(--ay-type-overline-leading);
+  letter-spacing: var(--ay-type-overline-tracking);
+  font-weight: var(--ay-type-overline-weight);
+  text-transform: uppercase;
+}
+
+.ay-muted {
+  color: var(--ay-text-muted);
+}
+.ay-subtle {
+  color: var(--ay-text-subtle);
+}
+
+/*
+ * Anything that ticks or tabulates.
+ *
+ * Without fixed-width digits a running timer twitches every second as the glyph widths change —
+ * "1" is narrower than "8", so the whole clock shifts. On the worker's home screen, where the
+ * timer is the largest element, that twitch is the first thing you notice.
+ */
+.ay-numeric {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: var(--ay-font-numeric);
+}
+
+/* ===========================================================================
+   SURFACES
+   =========================================================================== */
+
+.ay-card {
+  background: var(--ay-surface);
+  border: 1px solid var(--ay-border);
+  border-radius: var(--ay-radius-lg);
+  box-shadow: var(--ay-shadow-md);
+}
+
+.ay-card-padded {
+  padding: var(--ay-space-5);
+}
+
+.ay-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ay-space-3);
+  padding: var(--ay-space-4) var(--ay-space-5);
+  border-bottom: 1px solid var(--ay-border);
+}
+
+/* ===========================================================================
+   BUTTONS
+   =========================================================================== */
+
+.ay-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ay-space-2);
+  min-height: var(--ay-touch-min);
+  padding: 0 var(--ay-space-5);
+  border: 1px solid transparent;
+  border-radius: var(--ay-radius-md);
+  font-size: var(--ay-type-body-size);
+  font-weight: 550;
+  cursor: pointer;
+  user-select: none;
+  /* Named properties, never `all`: transitioning `all` animates layout properties by accident
+     and drops frames. */
+  transition:
+    transform var(--ay-duration-press) var(--ay-ease-out),
+    background-color var(--ay-duration-press) ease,
+    border-color var(--ay-duration-press) ease,
+    opacity var(--ay-duration-press) ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/*
+ * The press.
+ *
+ * Feedback on pointer-down, not on release. The instant a gloved thumb lands, the button gives
+ * — that is what makes the interface feel like it heard you, and it is the single cheapest
+ * thing you can do for perceived responsiveness.
+ */
+.ay-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ay-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Gated behind a real pointer: on a touch device, `:hover` sticks after a tap. */
+@media (hover: hover) and (pointer: fine) {
+  .ay-button-primary:hover:not(:disabled) {
+    background: var(--ay-accent-hover);
+  }
+  .ay-button-secondary:hover:not(:disabled),
+  .ay-button-ghost:hover:not(:disabled) {
+    background: var(--ay-surface-sunken);
+  }
+}
+
+.ay-button-primary {
+  background: var(--ay-accent);
+  color: var(--ay-text-on-accent);
+}
+
+.ay-button-secondary {
+  background: var(--ay-surface);
+  border-color: var(--ay-border-strong);
+  color: var(--ay-text);
+}
+
+.ay-button-ghost {
+  background: transparent;
+  color: var(--ay-text-muted);
+}
+
+.ay-button-danger {
+  background: var(--ay-danger-soft);
+  color: var(--ay-danger-soft-text);
+  border-color: transparent;
+}
+
+.ay-button-block {
+  width: 100%;
+}
+
+.ay-button-large {
+  min-height: var(--ay-touch-comfortable);
+  font-size: 1rem;
+}
+
+/* ===========================================================================
+   STATE CARD — the green "РАБОТИШ" / "ДВИЖЕНИЕ" panel
+   =========================================================================== */
+
+.ay-state-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ay-space-4);
+  padding: var(--ay-space-4) var(--ay-space-5);
+  border-radius: var(--ay-radius-lg);
+  background: var(--ay-state-working);
+  border: 1px solid var(--ay-state-working-border);
+  color: var(--ay-state-working-text);
+}
+
+.ay-state-card-label {
+  font-size: var(--ay-type-caption-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 650;
+}
+
+/* ===========================================================================
+   LIST ROWS — the position and vehicle pickers
+   =========================================================================== */
+
+.ay-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ay-space-2);
+}
+
+.ay-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ay-space-3);
+  width: 100%;
+  min-height: var(--ay-touch-comfortable);
+  padding: var(--ay-space-3) var(--ay-space-4);
+  background: var(--ay-surface);
+  border: 1px solid var(--ay-border);
+  border-radius: var(--ay-radius-md);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform var(--ay-duration-press) var(--ay-ease-out),
+    border-color var(--ay-duration-press) ease,
+    background-color var(--ay-duration-press) ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.ay-row:active {
+  transform: scale(0.985);
+  background: var(--ay-surface-sunken);
+}
+
+.ay-row[aria-selected='true'] {
+  border-color: var(--ay-accent);
+  background: var(--ay-accent-soft);
+}
+
+.ay-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ay-row-chevron {
+  color: var(--ay-text-subtle);
+  flex-shrink: 0;
+}
+
+/* ===========================================================================
+   BADGES
+   =========================================================================== */
+
+.ay-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ay-space-1);
+  padding: 0.125rem var(--ay-space-2);
+  border-radius: var(--ay-radius-full);
+  font-size: var(--ay-type-caption-size);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.ay-badge-accent {
+  background: var(--ay-accent-soft);
+  color: var(--ay-accent-soft-text);
+}
+.ay-badge-success {
+  background: var(--ay-state-working);
+  color: var(--ay-state-working-text);
+}
+.ay-badge-warning {
+  background: var(--ay-warning-soft);
+  color: var(--ay-warning-soft-text);
+}
+.ay-badge-danger {
+  background: var(--ay-danger-soft);
+  color: var(--ay-danger-soft-text);
+}
+.ay-badge-neutral {
+  background: var(--ay-surface-sunken);
+  color: var(--ay-text-muted);
+}
+
+/* ===========================================================================
+   PORTAL SHELL
+   =========================================================================== */
+
+.ay-portal {
+  max-width: var(--ay-portal-max-width);
+  margin: 0 auto;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ay-bg);
+}
+
+.ay-portal-body {
+  flex: 1;
+  padding: var(--ay-space-4);
+  padding-bottom: calc(var(--ay-tab-bar-height) + var(--ay-space-6));
+  display: flex;
+  flex-direction: column;
+  gap: var(--ay-space-4);
+}
+
+/*
+ * App bar and tab bar as translucent layers with content scrolling under them, rather than
+ * opaque strips that eat a fixed band of a small screen.
+ */
+.ay-appbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--ay-space-3);
+  min-height: 3.5rem;
+  padding: 0 var(--ay-space-4);
+  padding-top: env(safe-area-inset-top, 0px);
+  background: var(--ay-chrome);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid var(--ay-chrome-border);
+}
+
+.ay-tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  max-width: var(--ay-portal-max-width);
+  margin: 0 auto;
+  height: var(--ay-tab-bar-height);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--ay-chrome);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-top: 1px solid var(--ay-chrome-border);
+}
+
+.ay-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ay-text-subtle);
+  font-size: var(--ay-type-overline-size);
+  font-weight: 550;
+  cursor: pointer;
+  transition: color var(--ay-duration-press) ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ay-tab[aria-current='page'] {
+  color: var(--ay-accent);
+}
+
+/*
+ * Translucency is a preference, not a requirement. When it is reduced, the chrome goes solid —
+ * a frosted bar is decoration; legible navigation is not.
+ */
+@media (prefers-reduced-transparency: reduce) {
+  .ay-appbar,
+  .ay-tabbar {
+    background: var(--ay-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* ===========================================================================
+   SHEET
+   =========================================================================== */
+
+.ay-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--ay-scrim);
+  animation: ay-fade-in var(--ay-duration-popover) var(--ay-ease-out);
+}
+
+.ay-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  max-width: var(--ay-portal-max-width);
+  margin: 0 auto;
+  max-height: 85dvh;
+  overflow-y: auto;
+  padding: var(--ay-space-5);
+  padding-bottom: calc(var(--ay-space-5) + env(safe-area-inset-bottom, 0px));
+  background: var(--ay-surface-raised);
+  border-radius: var(--ay-radius-xl) var(--ay-radius-xl) 0 0;
+  box-shadow: var(--ay-shadow-overlay);
+  /* `translateY(100%)` moves the sheet by its own height, whatever that turns out to be — no
+     magic pixel value to get wrong when the content changes. */
+  animation: ay-sheet-in var(--ay-duration-sheet) var(--ay-ease-drawer);
+}
+
+.ay-sheet-grabber {
+  width: 2.25rem;
+  height: 0.25rem;
+  margin: 0 auto var(--ay-space-4);
+  border-radius: var(--ay-radius-full);
+  background: var(--ay-border-strong);
+}
+
+@keyframes ay-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes ay-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+/* ===========================================================================
+   TRACKING INDICATOR
+   =========================================================================== */
+
+.ay-tracking {
+  display: flex;
+  align-items: center;
+  gap: var(--ay-space-2);
+}
+
+.ay-tracking-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--ay-radius-full);
+  background: var(--ay-danger);
+  flex-shrink: 0;
+}
+
+/*
+ * The recording pulse.
+ *
+ * The one animation in the driver portal that runs continuously, and it earns that: a driver
+ * glancing at a cradled phone needs to know at a glance that the route is being recorded. It is
+ * slow and low-contrast so it reads as a heartbeat rather than an alarm.
+ */
+.ay-tracking-dot[data-state='ACTIVE'] {
+  animation: ay-pulse 2s var(--ay-ease-in-out) infinite;
+}
+
+.ay-tracking-dot[data-state='DEGRADED'],
+.ay-tracking-dot[data-state='OFFLINE'] {
+  background: var(--ay-warning);
+}
+
+.ay-tracking-dot[data-state='INTERRUPTED'] {
+  background: var(--ay-warning);
+}
+
+.ay-tracking-dot[data-state='PAUSED'],
+.ay-tracking-dot[data-state='STOPPED'] {
+  background: var(--ay-text-subtle);
+}
+
+@keyframes ay-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ===========================================================================
+   REDUCED MOTION
+   =========================================================================== */
+
+/*
+ * Gentler, not absent. Opacity still carries meaning — the tracking pulse is the clearest
+ * signal a driver has that recording is live, so it survives at a slower rate. What goes is
+ * movement: the sheet cross-fades instead of travelling, and the press scale is dropped.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .ay-sheet {
+    animation: ay-fade-in var(--ay-duration-popover) ease;
+  }
+  .ay-button:active:not(:disabled),
+  .ay-row:active {
+    transform: none;
+  }
+  .ay-tracking-dot[data-state='ACTIVE'] {
+    animation-duration: 4s;
+  }
+}

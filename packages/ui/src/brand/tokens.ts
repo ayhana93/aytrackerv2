@@ -47,7 +47,10 @@ export const PLACEHOLDER_BRAND: Brand = {
   supportEmail: null,
 };
 
-export type ThemeMode = 'light' | 'dark';
+// Canonical definition lives with the colour tokens; re-exported here so the brand helpers
+// below read naturally without importing from two places.
+export type { ThemeMode } from '../tokens/color';
+import type { ThemeMode } from '../tokens/color';
 
 /**
  * Turns a brand into CSS custom properties.
