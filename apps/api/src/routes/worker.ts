@@ -12,7 +12,14 @@ import {
   startShiftSchema,
 } from '@aytracker/validation';
 import { withDrivingPermissions, withoutDrivingPermissions } from '@aytracker/module-shifts';
-import type { ClientActionId, PositionId, SiteId, WorkerId } from '@aytracker/types';
+import type {
+  ClientActionId,
+  PositionId,
+  ShiftTypeId,
+  SiteId,
+  VehicleId,
+  WorkerId,
+} from '@aytracker/types';
 import { ForbiddenError } from '@aytracker/domain';
 import type { AppServices } from '../services/container.js';
 
@@ -197,7 +204,7 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
               organizationId: actor.organizationId,
               workerId: actor.workerId as WorkerId,
               siteId: body.siteId as SiteId,
-              shiftTypeId: body.shiftTypeId as never,
+              shiftTypeId: body.shiftTypeId as ShiftTypeId,
               initialPositionId: body.initialPositionId as PositionId | null,
               at: resolveOccurredAt(request, body.occurredAt),
               startedBySupervisor: false,
@@ -397,7 +404,7 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
             organizationId: actor.organizationId,
             workerId: actor.workerId as WorkerId,
             positionId: body.positionId as PositionId,
-            vehicleId: body.vehicleId as never,
+            vehicleId: body.vehicleId as VehicleId,
             label: body.label,
             startLatitude: body.startLatitude,
             startLongitude: body.startLongitude,

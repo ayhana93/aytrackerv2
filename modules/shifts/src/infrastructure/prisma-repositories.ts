@@ -1,4 +1,4 @@
-import type { DatabaseClient, PrismaClient } from '@aytracker/database';
+import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
 import type {
   ClientActionId,
@@ -420,7 +420,7 @@ export class PrismaIdempotencyStore implements IdempotencyStore {
       data: {
         state: 'COMPLETED',
         responseStatus: input.status,
-        responseBody: input.response as never,
+        responseBody: input.response as Prisma.InputJsonValue,
       },
     });
   }

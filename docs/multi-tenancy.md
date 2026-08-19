@@ -141,6 +141,27 @@ entitlements, billing customers, subscriptions, and the idempotency ledger.
 `roles` is a hybrid: system roles have `organizationId = NULL` and are readable by every tenant;
 custom roles belong to one organization. Its RLS policy encodes exactly that.
 
+### The two tables that carry `organizationId` without RLS
+
+`sessions` and `auth_attempts` both have an `organizationId` column and are deliberately **not**
+under RLS. Both are read _before_ a tenant is known:
+
+- A request arrives with a cookie. `sessions` is looked up by `tokenHash`, and the row that comes
+  back is what determines the organization. An RLS policy keyed on `app.organization_id` would
+  require the GUC to already be set — meaning the tenant would have to be known in order to find
+  out the tenant.
+- `auth_attempts` is counted during login for lockout, including attempts naming an organization
+  that does not exist. A policy would make a failed lookup uncountable, which is precisely the
+  case worth counting.
+
+They are guarded instead by the shape of their access: `sessions` is only ever queried by an
+unguessable `tokenHash` (SHA-256, never stored raw), and the `sessions_tenant_bound_for_non_users`
+check constraint requires worker and driver sessions to carry an organization. Every read after
+authentication runs inside `withTenant`.
+
+This exclusion is asserted explicitly in `tests/integration/schema-invariants.test.ts`, so a new
+tenant table added without RLS still fails the suite rather than joining a silent exception list.
+
 ---
 
 ## 4. The organization boundary in practice

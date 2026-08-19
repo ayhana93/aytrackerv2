@@ -125,13 +125,20 @@ export interface TestTenant {
     machine2: string;
     packaging: string;
     restricted: string;
+    /** A DRIVING position: taking it hands the worker a vehicle. */
+    driving: string;
   };
   readonly qualificationIds: { extrusion: string; cutting: string };
   readonly workerId: string;
   readonly otherWorkerId: string;
   readonly driverId: string;
   readonly otherDriverId: string;
+  /** Held long-term by `driverId` through a manual assignment. */
   readonly vehicleId: string;
+  /** Held long-term by `otherDriverId`. */
+  readonly otherVehicleId: string;
+  /** Nobody holds this one. What the handoff creates an automatic assignment for. */
+  readonly freeVehicleId: string;
   readonly adminUserId: string;
   readonly slug: string;
 }
@@ -253,6 +260,20 @@ export async function createTestTenant(slug: string): Promise<TestTenant> {
     },
   });
 
+  // Named the way a Bulgarian customer would name it, precisely to prove the behaviour comes from
+  // `kind` and not from the name: a tenant calling it "Chauffeur" gets the same routing.
+  const driving = await prisma.position.create({
+    data: {
+      organizationId: organization.id,
+      siteId: site.id,
+      workAreaId: workArea.id,
+      name: 'Шофьор',
+      code: 'DRV',
+      kind: 'DRIVING',
+      changeMode: 'INSTANT',
+    },
+  });
+
   const pinHash = await hashPin('482913');
   const worker = await prisma.worker.create({
     data: {
@@ -309,34 +330,56 @@ export async function createTestTenant(slug: string): Promise<TestTenant> {
       odometerCurrent: '50000',
     },
   });
+  // Deliberately unassigned. The handoff needs a vehicle it can create an assignment for, and a
+  // fleet with every vehicle already spoken for would never exercise that path.
+  const freeVehicle = await prisma.vehicle.create({
+    data: {
+      organizationId: organization.id,
+      siteId: site.id,
+      registrationNumber: `${slug.toUpperCase()}-003`,
+      make: 'Renault',
+      model: 'Master',
+      vehicleType: 'VAN',
+      fuelType: 'DIESEL',
+      odometerCurrent: '20000',
+    },
+  });
 
+  // `workerId` is what makes a worker able to take a vehicle. Without it the handoff refuses,
+  // which is the point — see modules/shifts/src/domain/driving.ts.
   const driver = await prisma.driver.create({
     data: {
       organizationId: organization.id,
+      workerId: worker.id,
       driverCode: 'D001',
       firstName: 'Test',
       lastName: 'Driver',
       pinHash,
       pinSetAt: new Date(),
+      licenseExpiresAt: new Date('2032-01-01T00:00:00Z'),
     },
   });
   const otherDriver = await prisma.driver.create({
     data: {
       organizationId: organization.id,
+      workerId: otherWorker.id,
       driverCode: 'D002',
       firstName: 'Other',
       lastName: 'Driver',
       pinHash,
       pinSetAt: new Date(),
+      licenseExpiresAt: new Date('2032-01-01T00:00:00Z'),
     },
   });
 
+  // Both manual: a fleet manager's decision, which the handoff must never quietly undo.
   await prisma.vehicleAssignment.create({
     data: {
       organizationId: organization.id,
       driverId: driver.id,
       vehicleId: vehicle.id,
       startedAt: new Date(),
+      isAutomatic: false,
     },
   });
   await prisma.vehicleAssignment.create({
@@ -345,6 +388,7 @@ export async function createTestTenant(slug: string): Promise<TestTenant> {
       driverId: otherDriver.id,
       vehicleId: otherVehicle.id,
       startedAt: new Date(),
+      isAutomatic: false,
     },
   });
 
@@ -357,6 +401,7 @@ export async function createTestTenant(slug: string): Promise<TestTenant> {
       machine2: machine2.id,
       packaging: packaging.id,
       restricted: restricted.id,
+      driving: driving.id,
     },
     qualificationIds: { extrusion: extrusion.id, cutting: cutting.id },
     workerId: worker.id,
@@ -364,6 +409,8 @@ export async function createTestTenant(slug: string): Promise<TestTenant> {
     driverId: driver.id,
     otherDriverId: otherDriver.id,
     vehicleId: vehicle.id,
+    otherVehicleId: otherVehicle.id,
+    freeVehicleId: freeVehicle.id,
     adminUserId: adminUser.id,
     slug,
   };

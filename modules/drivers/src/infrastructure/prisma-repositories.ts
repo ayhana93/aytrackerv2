@@ -1,4 +1,4 @@
-import type { DatabaseClient, PrismaClient } from '@aytracker/database';
+import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
 import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
@@ -297,7 +297,7 @@ export class PrismaTrackingEventRepository implements TrackingEventRepository {
         gapSeconds: input.gapSeconds ?? null,
         lastLatitude: input.lastLatitude?.toFixed(6) ?? null,
         lastLongitude: input.lastLongitude?.toFixed(6) ?? null,
-        metadata: (input.metadata ?? {}) as never,
+        metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
       },
     });
   }
