@@ -175,6 +175,9 @@ importers:
 
   modules/audit:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -194,9 +197,15 @@ importers:
 
   modules/drivers:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../../packages/tracking
       '@aytracker/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -213,12 +222,18 @@ importers:
 
   modules/fleet:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
       '@aytracker/module-drivers':
         specifier: workspace:*
         version: link:../drivers
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../../packages/tracking
       '@aytracker/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -235,6 +250,9 @@ importers:
 
   modules/production:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -257,6 +275,9 @@ importers:
 
   modules/recommendations:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -276,6 +297,9 @@ importers:
 
   modules/reporting:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -295,6 +319,9 @@ importers:
 
   modules/shifts:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -317,6 +344,9 @@ importers:
 
   modules/workforce:
     dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -378,6 +408,12 @@ importers:
 
   packages/database:
     dependencies:
+      '@aytracker/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@aytracker/types':
+        specifier: workspace:*
+        version: link:../types
       '@prisma/client':
         specifier: ^6.3.0
         version: 6.19.3(prisma@6.19.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
@@ -385,9 +421,6 @@ importers:
       '@aytracker/auth':
         specifier: workspace:*
         version: link:../auth
-      '@aytracker/types':
-        specifier: workspace:*
-        version: link:../types
       prisma:
         specifier: ^6.3.0
         version: 6.19.3(magicast@0.3.5)(typescript@5.9.3)

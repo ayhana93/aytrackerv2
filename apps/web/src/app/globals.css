@@ -1,0 +1,52 @@
+/*
+ * Temporary development styling only.
+ *
+ * The visual design of AYtracker has not been chosen yet — see docs/architecture.md § design
+ * workflow. This file exists so the wireframe routes are legible while the domain is built, and
+ * will be replaced entirely once a design reference is provided. Nothing here should be treated
+ * as a design decision.
+ */
+
+:root {
+  --ay-space: 8px;
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  line-height: 1.5;
+  background: var(--ay-color-surface, #ffffff);
+  color: var(--ay-color-surface-foreground, #0f172a);
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: calc(var(--ay-space) * 4);
+}
+
+h1,
+h2 {
+  line-height: 1.25;
+}
+
+code {
+  font-family: ui-monospace, 'SFMono-Regular', monospace;
+  font-size: 0.9em;
+}
+
+.placeholder-notice {
+  border: 1px dashed currentColor;
+  border-radius: 6px;
+  padding: calc(var(--ay-space) * 2);
+  opacity: 0.85;
+}

@@ -18,7 +18,7 @@
     "test": "vitest run --dir src"
   },
   "dependencies": {
-    
+    "@aytracker/database": "workspace:*",
     "@aytracker/domain": "workspace:*",
     "@aytracker/types": "workspace:*",
     "@aytracker/validation": "workspace:*",

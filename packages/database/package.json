@@ -25,11 +25,12 @@
     "validate": "prisma validate"
   },
   "dependencies": {
+    "@aytracker/domain": "workspace:*",
+    "@aytracker/types": "workspace:*",
     "@prisma/client": "^6.3.0"
   },
   "devDependencies": {
     "@aytracker/auth": "workspace:*",
-    "@aytracker/types": "workspace:*",
     "prisma": "^6.3.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"

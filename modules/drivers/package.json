@@ -18,8 +18,9 @@
     "test": "vitest run --dir src"
   },
   "dependencies": {
-    
+    "@aytracker/database": "workspace:*",
     "@aytracker/domain": "workspace:*",
+    "@aytracker/tracking": "workspace:*",
     "@aytracker/types": "workspace:*",
     "@aytracker/validation": "workspace:*",
     "zod": "^3.24.1"
