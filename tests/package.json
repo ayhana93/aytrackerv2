@@ -1,0 +1,22 @@
+{
+  "name": "@aytracker/tests",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@aytracker/auth": "workspace:*",
+    "@aytracker/billing": "workspace:*",
+    "@aytracker/database": "workspace:*",
+    "@aytracker/domain": "workspace:*",
+    "@aytracker/market": "workspace:*",
+    "@aytracker/tracking": "workspace:*",
+    "@playwright/test": "^1.49.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

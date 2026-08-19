@@ -1,0 +1,125 @@
+// @ts-check
+import eslint from '@eslint/js';
+import tseslint from 'typescript-eslint';
+
+/**
+ * Architectural dependency rules (see docs/modular-architecture.md).
+ *
+ * Layering, from lowest to highest:
+ *   types < config < domain < validation < {auth, localization, market, billing, tracking}
+ *   < database < modules/* < apps/*
+ *
+ * The rules below are the machine-enforced subset. The full rule set — including the
+ * "no cross-module database access" rule — is enforced by these restrictions plus the
+ * code review checklist in docs/modular-architecture.md.
+ */
+const noCrossModuleImports = {
+  files: ['modules/*/src/**/*.ts'],
+  rules: {
+    'no-restricted-imports': [
+      'error',
+      {
+        patterns: [
+          {
+            group: ['@aytracker/module-*/src/*', '@aytracker/module-*/dist/*'],
+            message:
+              'Import a module only through its public index (@aytracker/module-x), never through internal paths.',
+          },
+          {
+            group: ['**/modules/*/src/**'],
+            message:
+              'Cross-module deep imports are forbidden. Depend on the published contract instead.',
+          },
+        ],
+      },
+    ],
+  },
+};
+
+const noPrismaOutsideDatabaseLayer = {
+  files: ['modules/*/src/domain/**/*.ts', 'modules/*/src/application/**/*.ts'],
+  rules: {
+    'no-restricted-imports': [
+      'error',
+      {
+        paths: [
+          {
+            name: '@prisma/client',
+            message:
+              'Domain and application layers must not import Prisma. Depend on a repository port; wire the Prisma adapter in infrastructure/.',
+          },
+          {
+            name: '@aytracker/database',
+            message:
+              'Domain and application layers must not import the database package. Depend on a repository port instead.',
+          },
+        ],
+      },
+    ],
+  },
+};
+
+const noDomainToReact = {
+  files: ['packages/domain/**/*.ts', 'modules/*/src/domain/**/*.ts'],
+  rules: {
+    'no-restricted-imports': [
+      'error',
+      {
+        paths: [
+          { name: 'react', message: 'Business logic must never depend on React.' },
+          { name: 'next', message: 'Business logic must never depend on Next.js.' },
+        ],
+      },
+    ],
+  },
+};
+
+export default tseslint.config(
+  {
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.next/**',
+      '**/.turbo/**',
+      '**/coverage/**',
+      '**/generated/**',
+      '**/*.config.js',
+      '**/*.config.mjs',
+    ],
+  },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
+      ],
+      '@typescript-eslint/no-explicit-any': 'warn',
+      'no-console': ['error', { allow: ['warn', 'error'] }],
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
+      'prefer-const': 'error',
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'TSEnumDeclaration[const=true]',
+          message: 'const enums break isolatedModules; use a union type or plain object.',
+        },
+      ],
+    },
+  },
+  noCrossModuleImports,
+  noPrismaOutsideDatabaseLayer,
+  noDomainToReact,
+  {
+    files: ['**/*.test.ts', '**/*.spec.ts', 'tests/**/*.ts', '**/seed.ts', '**/scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+);

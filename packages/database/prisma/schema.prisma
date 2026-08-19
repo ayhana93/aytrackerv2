@@ -1,0 +1,1560 @@
+// AYtracker v2 — database schema
+//
+// Conventions (see docs/database.md and docs/multi-tenancy.md):
+//   * Every tenant-owned table carries `organizationId`. The only tables without it are
+//     platform-global: users, markets, plans, features, plan_features, prices, feature_flags,
+//     roadmap_items and the platform-level tables explicitly documented as such.
+//   * All timestamps are `timestamptz` and stored in UTC. Wall-clock rendering uses the
+//     site/organization IANA timezone.
+//   * Money is `Decimal(14, 4)`; a currency code always travels with an amount.
+//   * Every index that serves a tenant-scoped query starts with `organizationId`.
+//   * Invariants that cannot be expressed here (partial unique indexes, RLS policies, check
+//     constraints) live in raw SQL inside the migrations — see migrations/*/migration.sql.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// PLATFORM: markets, plans, pricing, features
+// ===========================================================================
+
+enum MeasurementSystem {
+  METRIC
+  IMPERIAL
+}
+
+enum TaxScheme {
+  NONE
+  EU_VAT
+  US_SALES_TAX
+}
+
+/// A market is a commercial region, not a country. Several countries may resolve to the
+/// same market (e.g. EU_WEST). `code` is the stable key used by the pricing catalog.
+model Market {
+  id                String            @id @default(uuid(7))
+  code              String            @unique // GLOBAL, BG, DE, US, EU_WEST, ...
+  name              String
+  /// ISO 3166-1 alpha-2 country codes that resolve to this market.
+  countryCodes      String[]
+  defaultCurrency   String // ISO 4217
+  defaultLocale     String // BCP 47
+  defaultTimezone   String // IANA
+  measurementSystem MeasurementSystem @default(METRIC)
+  taxScheme         TaxScheme         @default(NONE)
+  /// Feature codes unavailable in this market regardless of plan (regulatory carve-outs).
+  blockedFeatures   String[]          @default([])
+  isActive          Boolean           @default(true)
+  /// Lower number wins when several markets claim the same country.
+  priority          Int               @default(100)
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @db.Timestamptz(6)
+
+  prices        Price[]
+  organizations Organization[]
+
+  @@index([isActive])
+  @@map("markets")
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  PROFESSIONAL
+  BUSINESS
+  ENTERPRISE
+}
+
+model Plan {
+  id          String   @id @default(uuid(7))
+  code        String   @unique // starter, professional, business, enterprise
+  name        String
+  tier        PlanTier
+  description String?
+  /// Ordering for pricing tables.
+  sortOrder   Int      @default(0)
+  isPublic    Boolean  @default(true)
+  isActive    Boolean  @default(true)
+  /// Hard limits enforced by the entitlement service, e.g. { "workers": 25, "vehicles": 5 }.
+  limits      Json     @default("{}")
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  planFeatures  PlanFeature[]
+  prices        Price[]
+  subscriptions Subscription[]
+
+  @@index([isActive, isPublic])
+  @@map("plans")
+}
+
+/// The catalogue of things a plan can unlock. Feature codes are the single vocabulary used by
+/// entitlements.can("fleet.management") — see docs/modular-architecture.md.
+model Feature {
+  id          String   @id @default(uuid(7))
+  code        String   @unique // WORKFORCE, FLEET_MANAGEMENT, GPS_TRACKING, ...
+  name        String
+  description String?
+  /// Module that owns this feature: workforce, shifts, production, drivers, fleet, ...
+  moduleCode  String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  planFeatures PlanFeature[]
+  entitlements OrganizationEntitlement[]
+
+  @@index([moduleCode])
+  @@map("features")
+}
+
+model PlanFeature {
+  id        String   @id @default(uuid(7))
+  planId    String
+  featureId String
+  /// Optional numeric cap for metered features (null = unlimited within the plan).
+  limit     Int?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  plan    Plan    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureId])
+  @@index([featureId])
+  @@map("plan_features")
+}
+
+enum BillingInterval {
+  MONTHLY
+  ANNUAL
+}
+
+enum PriceStatus {
+  DRAFT
+  ACTIVE
+  GRANDFATHERED
+  RETIRED
+}
+
+/// Prices are immutable, versioned rows. Changing a price means inserting a new row and
+/// retiring the old one — an existing subscription keeps pointing at the row it was sold at,
+/// which is what makes grandfathering and founding pricing work. See docs/market-pricing.md.
+model Price {
+  id              String          @id @default(uuid(7))
+  planId          String
+  marketId        String
+  currency        String // ISO 4217, must be spendable in the market
+  interval        BillingInterval
+  /// Net amount excluding tax, in major units (e.g. 49.0000 = €49).
+  amount          Decimal         @db.Decimal(14, 4)
+  status          PriceStatus     @default(DRAFT)
+  effectiveFrom   DateTime        @db.Timestamptz(6)
+  effectiveTo     DateTime?       @db.Timestamptz(6)
+  /// Marks founding/promotional rows so they can be offered selectively rather than listed.
+  isPromotional   Boolean         @default(false)
+  promotionCode   String?
+  /// Provider-side identifier (e.g. Stripe price id). Never used for authorization.
+  externalPriceId String?
+  createdAt       DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime        @updatedAt @db.Timestamptz(6)
+
+  plan          Plan           @relation(fields: [planId], references: [id], onDelete: Restrict)
+  market        Market         @relation(fields: [marketId], references: [id], onDelete: Restrict)
+  subscriptions Subscription[]
+
+  @@index([marketId, planId, interval, status])
+  @@index([status, effectiveFrom])
+  @@map("prices")
+}
+
+/// Platform-wide kill switches and gradual rollouts. Distinct from entitlements: a feature flag
+/// says "is this code path on", an entitlement says "has this customer paid for it".
+model FeatureFlag {
+  id              String   @id @default(uuid(7))
+  key             String   @unique
+  description     String?
+  isEnabled       Boolean  @default(false)
+  /// Percentage rollout 0..100, applied to a stable hash of the organization id.
+  rolloutPercent  Int      @default(0)
+  /// Organizations explicitly opted in regardless of rollout percentage.
+  enabledOrgIds   String[] @default([])
+  /// Organizations explicitly opted out regardless of rollout percentage.
+  disabledOrgIds  String[] @default([])
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("feature_flags")
+}
+
+// ===========================================================================
+// TENANT: organization, branding, settings
+// ===========================================================================
+
+enum OrganizationStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+model Organization {
+  id             String             @id @default(uuid(7))
+  /// URL-safe tenant key. Used for worker/driver login scoping, never for authorization.
+  slug           String             @unique
+  name           String
+  legalName      String?
+  status         OrganizationStatus @default(TRIAL)
+
+  /// Operating country (where the work happens).
+  countryCode    String
+  /// Billing country — the only country that may drive pricing and tax. Server-controlled.
+  billingCountry String
+  marketId       String?
+
+  defaultLocale   String            @default("en")
+  defaultTimezone String            @default("UTC")
+  defaultCurrency String            @default("EUR")
+  measurementSystem MeasurementSystem @default(METRIC)
+
+  trialEndsAt DateTime? @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt   DateTime? @db.Timestamptz(6)
+
+  market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
+
+  branding        OrganizationBranding?
+  settings        OrganizationSettings?
+  members         OrganizationMember[]
+  roles           Role[]
+  sites           Site[]
+  workAreas       WorkArea[]
+  positions       Position[]
+  workers         Worker[]
+  qualifications  Qualification[]
+  shiftTypes      ShiftType[]
+  shifts          Shift[]
+  shiftBreaks     ShiftBreak[]
+  positionSessions PositionSession[]
+  productionEntries ProductionEntry[]
+  productTemplates ProductTemplate[]
+  drivers         Driver[]
+  vehicles        Vehicle[]
+  vehicleAssignments VehicleAssignment[]
+  driverTrips     DriverTrip[]
+  tripLocationPoints TripLocationPoint[]
+  trackingEvents  TrackingEvent[]
+  fuelExpenses    FuelExpense[]
+  vehicleExpenses VehicleExpense[]
+  vehicleDocuments VehicleDocument[]
+  recommendations Recommendation[]
+  auditLogs       AuditLog[]
+  corrections     Correction[]
+  entitlements    OrganizationEntitlement[]
+  billingCustomer BillingCustomer?
+  subscriptions   Subscription[]
+  sessions        Session[]
+  idempotencyKeys IdempotencyKey[]
+
+  @@index([status])
+  @@index([billingCountry])
+  @@map("organizations")
+}
+
+/// White-label branding. One row per organization; assets live in object storage and only
+/// their URLs are stored here. See docs/white-label.md.
+model OrganizationBranding {
+  id                 String   @id @default(uuid(7))
+  organizationId     String   @unique
+  logoUrl            String?
+  logoLightUrl       String?
+  logoDarkUrl        String?
+  faviconUrl         String?
+  primaryColor       String?
+  secondaryColor     String?
+  accentColor        String?
+  companyName        String?
+  loginMessage       String?
+  customSupportEmail String?
+  /// Reserved for later white-label stages; kept nullable so the schema does not churn.
+  customDomain       String?  @unique
+  customAppName      String?
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_branding")
+}
+
+model OrganizationSettings {
+  id             String @id @default(uuid(7))
+  organizationId String @unique
+
+  /// Position-change policy defaults; individual positions may tighten them.
+  requireQualificationByDefault Boolean @default(true)
+  allowWorkerSelfShiftStart     Boolean @default(true)
+  maxShiftDurationMinutes       Int     @default(960)
+  autoCloseAbandonedShifts      Boolean @default(true)
+
+  /// Tracking policy.
+  locationRetentionDays   Int @default(180)
+  tripSummaryRetentionDays Int @default(1825)
+  /// Adaptive sampling defaults handed to the driver client; the client may only sample less
+  /// often than this, never more.
+  gpsMinIntervalSeconds   Int @default(15)
+  gpsMinDistanceMeters    Int @default(50)
+  gpsStaleAfterSeconds    Int @default(180)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_settings")
+}
+
+// ===========================================================================
+// IDENTITY & ACCESS
+// ===========================================================================
+
+/// Platform-level authentication identity for staff who log in with email + password.
+/// A user is NOT tenant-owned: the same person may be a member of several organizations.
+model User {
+  id                 String    @id @default(uuid(7))
+  email              String    @unique
+  emailVerifiedAt    DateTime? @db.Timestamptz(6)
+  passwordHash       String
+  firstName          String?
+  lastName           String?
+  /// User-level language preference; highest priority in locale resolution.
+  preferredLocale    String?
+  preferredTimezone  String?
+  isPlatformAdmin    Boolean   @default(false)
+  isActive           Boolean   @default(true)
+  lastLoginAt        DateTime? @db.Timestamptz(6)
+  /// Set when the password changes; invalidates every session issued before it.
+  credentialsChangedAt DateTime @default(now()) @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt          DateTime? @db.Timestamptz(6)
+
+  memberships     OrganizationMember[]
+  sessions        Session[]
+  workers         Worker[]
+  drivers         Driver[]
+  recommendations Recommendation[]
+  auditLogs       AuditLog[]
+  corrections     Correction[]
+
+  @@index([isActive])
+  @@map("users")
+}
+
+enum MemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+model OrganizationMember {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  userId         String
+  roleId         String
+  status         MemberStatus @default(ACTIVE)
+  invitedAt      DateTime?    @db.Timestamptz(6)
+  joinedAt       DateTime?    @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, status])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+/// Roles are either system roles (organizationId = null, seeded and immutable) or custom roles
+/// owned by one organization. Permissions are stored as codes; the vocabulary lives in
+/// @aytracker/auth and is validated on write.
+model Role {
+  id             String   @id @default(uuid(7))
+  organizationId String?
+  code           String
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false)
+  /// Permission codes, e.g. ["shifts.read", "shifts.create"].
+  permissions    String[] @default([])
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members      OrganizationMember[]
+
+  @@unique([organizationId, code])
+  @@index([isSystem])
+  @@map("roles")
+}
+
+enum ActorType {
+  USER
+  WORKER
+  DRIVER
+}
+
+/// Server-side session. The cookie carries only an opaque id; every attribute that matters for
+/// authorization (organization, actor, permissions) is read from this row on each request.
+model Session {
+  id             String    @id @default(uuid(7))
+  /// SHA-256 of the session token. The raw token never touches the database.
+  tokenHash      String    @unique
+  actorType      ActorType
+  userId         String?
+  workerId       String?
+  driverId       String?
+  /// Null only for platform-admin sessions that have not selected a tenant yet.
+  organizationId String?
+  /// Snapshot of the permission set at issue time; refreshed when the role changes.
+  permissions    String[]  @default([])
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  lastSeenAt     DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt      DateTime  @db.Timestamptz(6)
+  revokedAt      DateTime? @db.Timestamptz(6)
+  revokedReason  String?
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  worker       Worker?       @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  driver       Driver?       @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, expiresAt])
+  @@index([userId])
+  @@index([workerId])
+  @@index([driverId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+enum AuthAttemptOutcome {
+  SUCCESS
+  BAD_CREDENTIALS
+  LOCKED
+  UNKNOWN_IDENTITY
+  RATE_LIMITED
+}
+
+/// Brute-force accounting. Retained briefly and pruned by a scheduled job.
+model AuthAttempt {
+  id             String             @id @default(uuid(7))
+  organizationId String?
+  actorType      ActorType
+  /// Email, employee number or driver code — lowercased. Never a secret.
+  identifier     String
+  outcome        AuthAttemptOutcome
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime           @default(now()) @db.Timestamptz(6)
+
+  @@index([identifier, createdAt])
+  @@index([ipAddress, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("auth_attempts")
+}
+
+// ===========================================================================
+// WORKFORCE
+// ===========================================================================
+
+enum RecordStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+model Site {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  name           String
+  code           String
+  /// IANA timezone. Shifts at this site are rendered in it; storage stays UTC.
+  timezone       String
+  countryCode    String?
+  address        String?
+  status         RecordStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  workAreas WorkArea[]
+  positions Position[]
+  workers   Worker[]
+  shifts    Shift[]
+  vehicles  Vehicle[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@map("sites")
+}
+
+model WorkArea {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  siteId         String
+  name           String
+  code           String
+  description    String?
+  status         RecordStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site         Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  positions Position[]
+
+  @@unique([organizationId, siteId, code])
+  @@index([organizationId, status])
+  @@index([organizationId, siteId])
+  @@map("work_areas")
+}
+
+/// How a worker is allowed to move onto a position. See docs/position-management.md.
+enum PositionChangeMode {
+  INSTANT
+  QUALIFICATION_REQUIRED
+  SUPERVISOR_APPROVAL
+}
+
+model Position {
+  id             String             @id @default(uuid(7))
+  organizationId String
+  siteId         String
+  workAreaId     String
+  name           String
+  code           String
+  description    String?
+  changeMode     PositionChangeMode @default(QUALIFICATION_REQUIRED)
+  /// Optional cap on concurrent workers. Null = unlimited.
+  capacity       Int?
+  /// Stable token embedded in the position QR code. Rotatable; never a credential by itself.
+  qrToken        String?            @unique
+  status         RecordStatus       @default(ACTIVE)
+  createdAt      DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site         Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  workArea     WorkArea     @relation(fields: [workAreaId], references: [id], onDelete: Restrict)
+
+  requiredQualifications PositionQualification[]
+  eligibilities          WorkerPositionEligibility[]
+  positionSessions       PositionSession[]
+  productionEntries      ProductionEntry[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@index([organizationId, workAreaId])
+  @@index([organizationId, siteId, status])
+  @@map("positions")
+}
+
+enum WorkerStatus {
+  ACTIVE
+  INACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+/// Worker profile. Authentication material (pinHash) is deliberately kept on the same row but
+/// is never selected by default — repositories expose an explicit `withCredentials` read.
+model Worker {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  siteId         String?
+  /// Login identifier, unique per organization. Case-insensitive comparison at the API layer.
+  employeeNumber String
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  /// Argon2id hash of the PIN. Null means PIN login is not enabled for this worker.
+  pinHash        String?
+  pinSetAt       DateTime?    @db.Timestamptz(6)
+  failedPinAttempts Int       @default(0)
+  lockedUntil    DateTime?    @db.Timestamptz(6)
+  /// Optional link to a full user account (a supervisor who also clocks in, for example).
+  userId         String?
+  preferredLocale String?
+  status         WorkerStatus @default(ACTIVE)
+  hiredAt        DateTime?    @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  deletedAt      DateTime?    @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site         Site?        @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  qualifications    WorkerQualification[]
+  eligibilities     WorkerPositionEligibility[]
+  shifts            Shift[]
+  positionSessions  PositionSession[]
+  productionEntries ProductionEntry[]
+  drivers           Driver[]
+  sessions          Session[]
+  auditLogs         AuditLog[]
+
+  @@unique([organizationId, employeeNumber])
+  @@index([organizationId, status])
+  @@index([organizationId, siteId, status])
+  @@index([organizationId, createdAt])
+  @@map("workers")
+}
+
+model Qualification {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  name           String
+  code           String
+  description    String?
+  /// Whether this qualification expires and must be renewed.
+  expires        Boolean      @default(false)
+  validityDays   Int?
+  status         RecordStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  workerQualifications   WorkerQualification[]
+  positionQualifications PositionQualification[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@map("qualifications")
+}
+
+model WorkerQualification {
+  id              String    @id @default(uuid(7))
+  organizationId  String
+  workerId        String
+  qualificationId String
+  grantedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt       DateTime? @db.Timestamptz(6)
+  grantedByUserId String?
+  notes           String?
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  worker        Worker        @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  qualification Qualification @relation(fields: [qualificationId], references: [id], onDelete: Cascade)
+
+  @@unique([workerId, qualificationId])
+  @@index([organizationId, workerId])
+  @@index([organizationId, expiresAt])
+  @@map("worker_qualifications")
+}
+
+model PositionQualification {
+  id              String   @id @default(uuid(7))
+  organizationId  String
+  positionId      String
+  qualificationId String
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  position      Position      @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  qualification Qualification @relation(fields: [qualificationId], references: [id], onDelete: Cascade)
+
+  @@unique([positionId, qualificationId])
+  @@index([organizationId, positionId])
+  @@map("position_qualifications")
+}
+
+/// An explicit allow/deny override on top of qualification-derived eligibility.
+/// Resolution order: explicit DENY > explicit ALLOW > qualification match > position changeMode.
+enum EligibilityEffect {
+  ALLOW
+  DENY
+}
+
+model WorkerPositionEligibility {
+  id             String            @id @default(uuid(7))
+  organizationId String
+  workerId       String
+  positionId     String
+  effect         EligibilityEffect @default(ALLOW)
+  reason         String?
+  grantedByUserId String?
+  validFrom      DateTime?         @db.Timestamptz(6)
+  validTo        DateTime?         @db.Timestamptz(6)
+  createdAt      DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime          @updatedAt @db.Timestamptz(6)
+
+  worker   Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+
+  @@unique([workerId, positionId])
+  @@index([organizationId, workerId])
+  @@index([organizationId, positionId])
+  @@map("worker_position_eligibility")
+}
+
+// ===========================================================================
+// SHIFTS
+// ===========================================================================
+
+model ShiftType {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  name           String
+  code           String
+  /// Local wall-clock start/end, minutes from midnight in the site timezone.
+  startMinute    Int
+  endMinute      Int
+  /// True when endMinute <= startMinute, i.e. the shift crosses midnight.
+  crossesMidnight Boolean     @default(false)
+  paidBreakMinutes   Int      @default(0)
+  unpaidBreakMinutes Int      @default(0)
+  color          String?
+  status         RecordStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shifts       Shift[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@map("shift_types")
+}
+
+enum ShiftStatus {
+  SCHEDULED
+  ACTIVE
+  ON_BREAK
+  COMPLETED
+  CANCELLED
+}
+
+model Shift {
+  id             String      @id @default(uuid(7))
+  organizationId String
+  siteId         String
+  workerId       String
+  shiftTypeId    String?
+  status         ShiftStatus @default(SCHEDULED)
+  scheduledStart DateTime?   @db.Timestamptz(6)
+  scheduledEnd   DateTime?   @db.Timestamptz(6)
+  actualStart    DateTime?   @db.Timestamptz(6)
+  actualEnd      DateTime?   @db.Timestamptz(6)
+  /// Derived on close: actual span minus unpaid break time. Never computed in the browser.
+  workedSeconds  Int?
+  breakSeconds   Int?
+  notes          String?
+  /// Set when the shift was force-closed by the system rather than by the worker.
+  autoClosedAt   DateTime?   @db.Timestamptz(6)
+  createdAt      DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime    @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site         Site         @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  worker       Worker       @relation(fields: [workerId], references: [id], onDelete: Restrict)
+  shiftType    ShiftType?   @relation(fields: [shiftTypeId], references: [id], onDelete: SetNull)
+
+  breaks            ShiftBreak[]
+  positionSessions  PositionSession[]
+  productionEntries ProductionEntry[]
+
+  @@index([organizationId, workerId, status])
+  @@index([organizationId, status])
+  @@index([organizationId, siteId, scheduledStart])
+  @@index([organizationId, actualStart])
+  @@index([organizationId, createdAt])
+  @@map("shifts")
+}
+
+enum BreakType {
+  PAID
+  UNPAID
+  MEAL
+  TECHNICAL
+}
+
+model ShiftBreak {
+  id              String    @id @default(uuid(7))
+  organizationId  String
+  shiftId         String
+  type            BreakType @default(UNPAID)
+  startedAt       DateTime  @db.Timestamptz(6)
+  endedAt         DateTime? @db.Timestamptz(6)
+  /// Server-computed on close. Never accepted from a client.
+  durationSeconds Int?
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shift        Shift        @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, shiftId])
+  @@index([organizationId, startedAt])
+  @@map("shift_breaks")
+}
+
+/// The append-only record of where a worker stood and for how long. This — not a JSON summary —
+/// is the source of truth for position time. See docs/position-management.md.
+model PositionSession {
+  id              String    @id @default(uuid(7))
+  organizationId  String
+  shiftId         String
+  workerId        String
+  positionId      String
+  startedAt       DateTime  @db.Timestamptz(6)
+  endedAt         DateTime? @db.Timestamptz(6)
+  /// Server-computed on close.
+  durationSeconds Int?
+  /// How the session was opened: MANUAL, QR, SUPERVISOR, SYSTEM.
+  source          String    @default("MANUAL")
+  /// Set when a supervisor corrected this row; the original values live in `corrections`.
+  correctedAt     DateTime? @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shift        Shift        @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  worker       Worker       @relation(fields: [workerId], references: [id], onDelete: Restrict)
+  position     Position     @relation(fields: [positionId], references: [id], onDelete: Restrict)
+
+  productionEntries ProductionEntry[]
+
+  @@index([organizationId, shiftId, startedAt])
+  @@index([organizationId, workerId, startedAt])
+  @@index([organizationId, positionId, startedAt])
+  @@map("position_sessions")
+}
+
+// ===========================================================================
+// PRODUCTION
+// ===========================================================================
+
+model ProductTemplate {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  name           String
+  code           String
+  unit           String       @default("pcs")
+  /// Expected units per hour, used by productivity reporting. Null = no target.
+  targetPerHour  Decimal?     @db.Decimal(12, 4)
+  status         RecordStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entries      ProductionEntry[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, status])
+  @@map("product_templates")
+}
+
+model ProductionEntry {
+  id                String   @id @default(uuid(7))
+  organizationId    String
+  shiftId           String
+  workerId          String
+  positionId        String
+  positionSessionId String?
+  productTemplateId String?
+  /// Units produced that passed. Non-negative; enforced by a check constraint.
+  goodQuantity      Decimal  @db.Decimal(14, 4)
+  defectQuantity    Decimal  @db.Decimal(14, 4) @default(0)
+  unit              String   @default("pcs")
+  recordedAt        DateTime @db.Timestamptz(6)
+  notes             String?
+  correctedAt       DateTime? @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shift           Shift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  worker          Worker           @relation(fields: [workerId], references: [id], onDelete: Restrict)
+  position        Position         @relation(fields: [positionId], references: [id], onDelete: Restrict)
+  positionSession PositionSession? @relation(fields: [positionSessionId], references: [id], onDelete: SetNull)
+  productTemplate ProductTemplate? @relation(fields: [productTemplateId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, shiftId])
+  @@index([organizationId, workerId, recordedAt])
+  @@index([organizationId, positionId, recordedAt])
+  @@index([organizationId, recordedAt])
+  @@map("production_entries")
+}
+
+// ===========================================================================
+// DRIVERS & FLEET
+// ===========================================================================
+
+enum DriverStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model Driver {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  /// Login identifier within the organization.
+  driverCode     String
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  pinHash        String?
+  pinSetAt       DateTime?    @db.Timestamptz(6)
+  failedPinAttempts Int       @default(0)
+  lockedUntil    DateTime?    @db.Timestamptz(6)
+  /// A driver may also be a worker, and/or hold a full user account.
+  workerId       String?
+  userId         String?
+  licenseNumber  String?
+  licenseExpiresAt DateTime?  @db.Timestamptz(6)
+  preferredLocale String?
+  status         DriverStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  deletedAt      DateTime?    @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  worker       Worker?      @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  assignments  VehicleAssignment[]
+  trips        DriverTrip[]
+  fuelExpenses FuelExpense[]
+  sessions     Session[]
+
+  @@unique([organizationId, driverCode])
+  @@index([organizationId, status])
+  @@index([organizationId, licenseExpiresAt])
+  @@map("drivers")
+}
+
+enum VehicleType {
+  CAR
+  VAN
+  TRUCK
+  BUS
+  FORKLIFT
+  OTHER
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  LPG
+  CNG
+  ELECTRIC
+  HYBRID
+  OTHER
+}
+
+enum VehicleStatus {
+  ACTIVE
+  IN_MAINTENANCE
+  OUT_OF_SERVICE
+  SOLD
+  ARCHIVED
+}
+
+model Vehicle {
+  id                 String        @id @default(uuid(7))
+  organizationId     String
+  siteId             String?
+  registrationNumber String
+  vin                String?
+  make               String
+  model              String
+  year               Int?
+  vehicleType        VehicleType   @default(CAR)
+  fuelType           FuelType      @default(DIESEL)
+  fuelTankCapacity   Decimal?      @db.Decimal(10, 2)
+  /// Kilometres (or miles, per the organization measurement system) on the odometer.
+  odometerCurrent    Decimal       @default(0) @db.Decimal(12, 2)
+  /// Consumption in `consumptionUnit`, used only for *estimates*, never for actual costs.
+  averageConsumption Decimal?      @db.Decimal(8, 3)
+  consumptionUnit    String        @default("L_PER_100KM")
+  status             VehicleStatus @default(ACTIVE)
+  notes              String?
+  createdAt          DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(6)
+  deletedAt          DateTime?     @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site         Site?        @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  assignments  VehicleAssignment[]
+  trips        DriverTrip[]
+  fuelExpenses FuelExpense[]
+  expenses     VehicleExpense[]
+  documents    VehicleDocument[]
+
+  @@unique([organizationId, registrationNumber])
+  @@index([organizationId, status])
+  @@index([organizationId, siteId])
+  @@index([organizationId, vehicleType])
+  @@map("vehicles")
+}
+
+model VehicleAssignment {
+  id             String    @id @default(uuid(7))
+  organizationId String
+  driverId       String
+  vehicleId      String
+  startedAt      DateTime  @db.Timestamptz(6)
+  endedAt        DateTime? @db.Timestamptz(6)
+  assignedByUserId String?
+  notes          String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  driver       Driver       @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, driverId, startedAt])
+  @@index([organizationId, vehicleId, startedAt])
+  @@map("vehicle_assignments")
+}
+
+enum TripStatus {
+  PLANNED
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+/// The driver-visible unit of work. Distance and duration are always server-derived from
+/// stored location points plus recorded gaps — never accepted from the device.
+model DriverTrip {
+  id             String     @id @default(uuid(7))
+  organizationId String
+  driverId       String
+  vehicleId      String
+  status         TripStatus @default(PLANNED)
+
+  label          String?
+  startedAt      DateTime?  @db.Timestamptz(6)
+  endedAt        DateTime?  @db.Timestamptz(6)
+
+  startLatitude  Decimal?   @db.Decimal(9, 6)
+  startLongitude Decimal?   @db.Decimal(9, 6)
+  endLatitude    Decimal?   @db.Decimal(9, 6)
+  endLongitude   Decimal?   @db.Decimal(9, 6)
+
+  /// Sum of segment distances between consecutive accepted points, excluding gaps.
+  distanceMeters Int        @default(0)
+  /// Wall-clock span minus paused intervals.
+  durationSeconds Int       @default(0)
+  pausedSeconds  Int        @default(0)
+  /// Seconds during which the trip was active but no location was being received.
+  untrackedSeconds Int      @default(0)
+
+  startOdometer  Decimal?   @db.Decimal(12, 2)
+  endOdometer    Decimal?   @db.Decimal(12, 2)
+
+  /// Last tracking state reported for this trip. Mirrors the latest TrackingEvent.
+  trackingState  String     @default("STOPPED")
+  lastPointAt    DateTime?  @db.Timestamptz(6)
+
+  notes          String?
+  createdAt      DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime   @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  driver       Driver       @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  locationPoints TripLocationPoint[]
+  trackingEvents TrackingEvent[]
+  fuelExpenses   FuelExpense[]
+
+  @@index([organizationId, driverId, startedAt])
+  @@index([organizationId, vehicleId, startedAt])
+  @@index([organizationId, status])
+  @@index([organizationId, startedAt])
+  @@map("driver_trips")
+}
+
+/// Raw GPS samples. High-volume, short-retention table — see docs/tracking.md.
+/// Coordinates are stored at 6 decimal places (~0.11 m); no more precision is retained.
+model TripLocationPoint {
+  id             String   @id @default(uuid(7))
+  organizationId String
+  tripId         String
+  /// Device-reported capture time. Trusted only for ordering within a trip, and clamped to the
+  /// trip window on ingestion.
+  timestamp      DateTime @db.Timestamptz(6)
+  latitude       Decimal  @db.Decimal(9, 6)
+  longitude      Decimal  @db.Decimal(9, 6)
+  accuracyMeters Decimal? @db.Decimal(8, 2)
+  speedMps       Decimal? @db.Decimal(8, 3)
+  heading        Decimal? @db.Decimal(6, 2)
+  altitude       Decimal? @db.Decimal(8, 2)
+  /// GPS | NETWORK | FUSED | MANUAL | IMPORTED
+  source         String   @default("GPS")
+  /// True when the point arrived after an offline period and was replayed from the device queue.
+  isBackfilled   Boolean  @default(false)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trip         DriverTrip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, tripId, timestamp])
+  @@index([organizationId, timestamp])
+  @@map("trip_location_points")
+}
+
+/// Neutral, factual records of tracking transitions. Wording never asserts intent — see
+/// docs/tracking.md § anti-tampering.
+enum TrackingEventType {
+  TRACKING_STARTED
+  TRACKING_STOPPED
+  TRACKING_PAUSED
+  TRACKING_RESUMED
+  SIGNAL_DEGRADED
+  LOCATION_UNAVAILABLE
+  PERMISSION_DISABLED
+  DEVICE_OFFLINE
+  APP_NOT_REPORTING
+  REPORTING_RECOVERED
+}
+
+model TrackingEvent {
+  id             String            @id @default(uuid(7))
+  organizationId String
+  tripId         String
+  type           TrackingEventType
+  /// State the trip entered as a result of this event.
+  state          String
+  occurredAt     DateTime          @db.Timestamptz(6)
+  detectedAt     DateTime          @default(now()) @db.Timestamptz(6)
+  /// For gap events: when reporting resumed, and the resulting untracked span.
+  recoveredAt    DateTime?         @db.Timestamptz(6)
+  gapSeconds     Int?
+  lastLatitude   Decimal?          @db.Decimal(9, 6)
+  lastLongitude  Decimal?          @db.Decimal(9, 6)
+  metadata       Json              @default("{}")
+  createdAt      DateTime          @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trip         DriverTrip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, tripId, occurredAt])
+  @@index([organizationId, type, occurredAt])
+  @@map("tracking_events")
+}
+
+model FuelExpense {
+  id                 String   @id @default(uuid(7))
+  organizationId     String
+  vehicleId          String
+  driverId           String?
+  tripId             String?
+  date               DateTime @db.Timestamptz(6)
+  /// Litres, or kWh for electric. Positive; enforced by a check constraint.
+  liters             Decimal  @db.Decimal(10, 3)
+  pricePerLiter      Decimal  @db.Decimal(10, 4)
+  /// Always recomputed server-side as liters * pricePerLiter. Client values are ignored.
+  totalCost          Decimal  @db.Decimal(14, 4)
+  currency           String
+  odometer           Decimal? @db.Decimal(12, 2)
+  isFullTank         Boolean  @default(true)
+  receiptReference   String?
+  documentUrl        String?
+  notes              String?
+  recordedByUserId   String?
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  driver       Driver?      @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  trip         DriverTrip?  @relation(fields: [tripId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, vehicleId, date])
+  @@index([organizationId, driverId, date])
+  @@index([organizationId, tripId])
+  @@index([organizationId, date])
+  @@map("fuel_expenses")
+}
+
+enum ExpenseCategory {
+  FUEL
+  INSURANCE
+  VIGNETTE
+  ROAD_TOLL
+  MAINTENANCE
+  REPAIR
+  TAX
+  INSPECTION
+  PARKING
+  LEASING
+  FINE
+  OTHER
+}
+
+model VehicleExpense {
+  id             String          @id @default(uuid(7))
+  organizationId String
+  vehicleId      String
+  category       ExpenseCategory
+  amount         Decimal         @db.Decimal(14, 4)
+  currency       String
+  date           DateTime        @db.Timestamptz(6)
+  odometer       Decimal?        @db.Decimal(12, 2)
+  vendor         String?
+  documentUrl    String?
+  notes          String?
+  /// Links the expense to the fuel row when category = FUEL, so cost roll-ups never double count.
+  fuelExpenseId  String?         @unique
+  recordedByUserId String?
+  createdAt      DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, vehicleId, date])
+  @@index([organizationId, category, date])
+  @@index([organizationId, date])
+  @@map("vehicle_expenses")
+}
+
+enum VehicleDocumentType {
+  INSURANCE
+  TECHNICAL_INSPECTION
+  VIGNETTE
+  REGISTRATION
+  LEASING_CONTRACT
+  TACHOGRAPH
+  OTHER
+}
+
+/// Anything with an expiry date that someone must be reminded about. The expiration
+/// abstraction is deliberately generic so notifications can consume it later.
+model VehicleDocument {
+  id             String              @id @default(uuid(7))
+  organizationId String
+  vehicleId      String
+  type           VehicleDocumentType
+  name           String
+  reference      String?
+  issuedAt       DateTime?           @db.Timestamptz(6)
+  expiresAt      DateTime?           @db.Timestamptz(6)
+  /// Days before expiry at which this document should start warning.
+  reminderDays   Int                 @default(30)
+  documentUrl    String?
+  notes          String?
+  createdAt      DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, vehicleId])
+  @@index([organizationId, expiresAt])
+  @@map("vehicle_documents")
+}
+
+// ===========================================================================
+// BILLING
+// ===========================================================================
+
+model BillingCustomer {
+  id             String  @id @default(uuid(7))
+  organizationId String  @unique
+  /// Provider-side customer id (e.g. Stripe customer). Opaque to the domain.
+  provider       String  @default("stripe")
+  externalId     String?
+
+  legalName      String?
+  billingEmail   String?
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  /// US state / regional subdivision, needed for sales tax.
+  region         String?
+  postalCode     String?
+  /// Authoritative billing country. Changing it is an audited, server-side operation.
+  countryCode    String
+
+  vatNumber        String?
+  vatValidatedAt   DateTime? @db.Timestamptz(6)
+  vatValidationRef String?
+  isBusiness       Boolean   @default(true)
+  /// Set when the reverse charge applies (validated EU VAT number outside the seller country).
+  reverseCharge    Boolean   @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalId])
+  @@index([countryCode])
+  @@map("billing_customers")
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+model Subscription {
+  id             String             @id @default(uuid(7))
+  organizationId String
+  planId         String
+  /// The exact price row the customer was sold at. Never re-resolved from the catalog.
+  priceId        String
+  status         SubscriptionStatus @default(TRIALING)
+  quantity       Int                @default(1)
+
+  currentPeriodStart DateTime? @db.Timestamptz(6)
+  currentPeriodEnd   DateTime? @db.Timestamptz(6)
+  trialEndsAt        DateTime? @db.Timestamptz(6)
+  cancelAt           DateTime? @db.Timestamptz(6)
+  cancelledAt        DateTime? @db.Timestamptz(6)
+
+  provider           String  @default("stripe")
+  externalId         String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  price        Price        @relation(fields: [priceId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, externalId])
+  @@index([organizationId, status])
+  @@index([status, currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+enum EntitlementSource {
+  PLAN
+  MANUAL_GRANT
+  TRIAL
+  PROMOTION
+}
+
+/// The resolved, queryable answer to "can this organization use this feature". Derived from the
+/// active subscription's plan, then overridden by explicit grants. The entitlement service is
+/// the only thing that writes here.
+model OrganizationEntitlement {
+  id             String            @id @default(uuid(7))
+  organizationId String
+  featureId      String
+  isEnabled      Boolean           @default(true)
+  source         EntitlementSource @default(PLAN)
+  /// Numeric cap for metered features; null = unlimited.
+  limit          Int?
+  expiresAt      DateTime?         @db.Timestamptz(6)
+  grantedByUserId String?
+  reason         String?
+  createdAt      DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime          @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  feature      Feature      @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, featureId])
+  @@index([organizationId, isEnabled])
+  @@map("organization_entitlements")
+}
+
+// ===========================================================================
+// RECOMMENDATIONS
+// ===========================================================================
+
+enum RecommendationCategory {
+  NEW_FEATURE
+  IMPROVEMENT
+  BUG
+  INTEGRATION
+  REPORTING
+  DRIVER_FLEET
+  OTHER
+}
+
+enum RecommendationPriority {
+  NICE_TO_HAVE
+  IMPORTANT
+  CRITICAL
+}
+
+enum RecommendationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  PLANNED
+  IN_DEVELOPMENT
+  RELEASED
+  DECLINED
+  DUPLICATE
+}
+
+model Recommendation {
+  id                String                 @id @default(uuid(7))
+  organizationId    String
+  submittedByUserId String?
+  title             String
+  description       String
+  category          RecommendationCategory @default(OTHER)
+  priority          RecommendationPriority @default(NICE_TO_HAVE)
+  status            RecommendationStatus   @default(SUBMITTED)
+  /// Visible only to platform staff.
+  adminNotes        String?
+  /// Set when this recommendation is merged into another one.
+  duplicateOfId     String?
+  roadmapItemId     String?
+  createdAt         DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(6)
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  submittedBy  User?           @relation(fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  duplicateOf  Recommendation? @relation("RecommendationDuplicate", fields: [duplicateOfId], references: [id], onDelete: SetNull)
+  duplicates   Recommendation[] @relation("RecommendationDuplicate")
+  roadmapItem  RoadmapItem?    @relation(fields: [roadmapItemId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+  @@index([status, priority])
+  @@map("recommendations")
+}
+
+enum RoadmapStatus {
+  CONSIDERING
+  PLANNED
+  IN_DEVELOPMENT
+  RELEASED
+  DECLINED
+}
+
+/// Platform-global roadmap. Not tenant-owned by design: several organizations can request the
+/// same thing and each sees the shared status.
+model RoadmapItem {
+  id          String        @id @default(uuid(7))
+  title       String
+  description String?
+  status      RoadmapStatus @default(CONSIDERING)
+  moduleCode  String?
+  targetQuarter String?
+  releasedAt  DateTime?     @db.Timestamptz(6)
+  isPublic    Boolean       @default(false)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime      @updatedAt @db.Timestamptz(6)
+
+  recommendations Recommendation[]
+
+  @@index([status])
+  @@map("roadmap_items")
+}
+
+// ===========================================================================
+// AUDIT, CORRECTIONS, SYNC
+// ===========================================================================
+
+model AuditLog {
+  id             String   @id @default(uuid(7))
+  organizationId String
+  actorUserId    String?
+  actorWorkerId  String?
+  actorDriverId  String?
+  /// Dotted action code, e.g. "shift.corrected", "branding.updated".
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json     @default("{}")
+  ipAddress      String?
+  userAgent      String?
+  requestId      String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser    User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorWorker  Worker?      @relation(fields: [actorWorkerId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, action, createdAt])
+  @@index([organizationId, actorUserId, createdAt])
+  @@map("audit_logs")
+}
+
+/// Every supervisor edit of a historical record. Immutable; one row per correction.
+model Correction {
+  id             String   @id @default(uuid(7))
+  organizationId String
+  entityType     String // position_session | shift | shift_break | production_entry | driver_trip
+  entityId       String
+  /// Full before/after snapshots of the changed fields.
+  originalValues Json
+  newValues      Json
+  reason         String
+  changedByUserId String
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  changedBy    User         @relation(fields: [changedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, createdAt])
+  @@map("corrections")
+}
+
+/// Idempotency ledger for offline sync and every critical mutation. The client generates a
+/// `clientActionId` (UUID) per intent; replays return the stored response instead of re-running
+/// the command. See docs/offline-sync.md.
+model IdempotencyKey {
+  id             String   @id @default(uuid(7))
+  organizationId String
+  /// Client-generated UUID for one logical action.
+  clientActionId String
+  /// Scope prevents one actor's key from colliding with another's.
+  actorType      ActorType
+  actorId        String
+  endpoint       String
+  /// Hash of the request body; a replay with a different body is a conflict, not a replay.
+  requestHash    String
+  responseStatus Int?
+  responseBody   Json?
+  /// PENDING while the command runs, COMPLETED once the response is stored.
+  state          String   @default("PENDING")
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt      DateTime @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, actorType, actorId, clientActionId])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}

@@ -1,0 +1,15 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'modules/*'
+  - 'tests'
+
+# Dependencies allowed to run install scripts. Anything not listed here is installed without
+# executing its lifecycle scripts — an explicit supply-chain decision, not an oversight.
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - argon2
+  - esbuild
+  - prisma
+  - sharp

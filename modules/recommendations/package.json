@@ -1,0 +1,30 @@
+{
+  "name": "@aytracker/module-recommendations",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run --dir src"
+  },
+  "dependencies": {
+    
+    "@aytracker/domain": "workspace:*",
+    "@aytracker/types": "workspace:*",
+    "@aytracker/validation": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
