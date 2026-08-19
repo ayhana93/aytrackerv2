@@ -259,7 +259,7 @@ describe('beginning to drive', () => {
   });
 
   it('refuses to begin driving while on a break', async () => {
-    const shiftId = await startShift();
+    await startShift();
     await shifts.startBreak({
       organizationId: tenant.organizationId as OrganizationId,
       workerId: tenant.workerId as WorkerId,
