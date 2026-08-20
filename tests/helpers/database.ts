@@ -116,6 +116,26 @@ export async function seedPlatformReferenceData(): Promise<void> {
   }
 }
 
+/**
+ * Turns a feature on for a tenant.
+ *
+ * `createTestTenant` deliberately grants nothing. A fixture that arrived fully entitled would
+ * make every paywall test pass by accident, and the first time anyone noticed would be a
+ * customer on the Starter plan reading GPS routes. Tests that need a feature ask for it, which
+ * also documents which features each flow actually requires.
+ */
+export async function grantFeature(organizationId: string, featureCode: string): Promise<void> {
+  const prisma = getTestClient();
+  const feature = await prisma.feature.findUnique({ where: { code: featureCode } });
+  if (!feature) throw new Error(`Unknown feature ${featureCode}. Seed platform data first.`);
+
+  await prisma.organizationEntitlement.upsert({
+    where: { organizationId_featureId: { organizationId, featureId: feature.id } },
+    update: { isEnabled: true },
+    create: { organizationId, featureId: feature.id, isEnabled: true, source: 'MANUAL_GRANT' },
+  });
+}
+
 export interface TestTenant {
   readonly organizationId: string;
   readonly siteId: string;

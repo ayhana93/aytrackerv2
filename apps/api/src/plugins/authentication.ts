@@ -71,9 +71,11 @@ const authenticationPlugin: FastifyPluginAsync<AuthenticationPluginOptions> = as
     /**
      * CSRF: double-submit.
      *
-     * The session cookie is HTTP-only and SameSite=Lax, so a cross-site form POST cannot read
-     * it — but a top-level cross-site POST would still send it. The CSRF cookie is readable by
-     * our own JS and must be echoed in a header, which an attacker on another origin cannot do.
+     * The session cookie is HTTP-only, so a cross-site form cannot read it — but a browser will
+     * still attach it to a cross-site request the form makes (that's what SameSite=None exists to
+     * allow, since the web app and the API are not always on the same registrable domain). The
+     * CSRF cookie is readable by our own JS and must be echoed in a header, which a form on
+     * another origin cannot do, so this check is what actually stops the cross-site submit.
      */
     if (MUTATING_METHODS.has(request.method)) {
       const cookieToken = request.cookies[CSRF_COOKIE_NAME];

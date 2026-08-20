@@ -34,7 +34,7 @@ export function hashSessionToken(token: string): string {
 export interface SessionCookieOptions {
   readonly httpOnly: true;
   readonly secure: boolean;
-  readonly sameSite: 'lax' | 'strict';
+  readonly sameSite: 'lax' | 'strict' | 'none';
   readonly path: string;
   readonly maxAge: number;
   readonly domain?: string;
@@ -43,10 +43,19 @@ export interface SessionCookieOptions {
 /**
  * Cookie flags.
  *
- * SameSite=Lax rather than Strict: the admin app links out to Stripe's billing portal and back,
- * and Strict would drop the session on that return navigation. Lax still blocks the
- * cross-site POST that CSRF needs, and the double-submit token below covers the rest.
- * `secure` is off only when explicitly running plain HTTP locally.
+ * SameSite depends on whether the web app and the API share a registrable domain.
+ *
+ *   * With `domain` set (a custom domain, e.g. `.aytracker.example`), the web app and the API
+ *     live under the same site and `Lax` is strictly better: it still lets the session survive a
+ *     top-level redirect back from somewhere like a billing portal, and it needs no `Secure`
+ *     requirement to work over local HTTP.
+ *   * Without it — the default on a fresh deploy, e.g. Railway's per-service `*.up.railway.app`
+ *     domains, which are themselves separate public-suffix entries — the web origin and the API
+ *     origin are cross-site. `Lax` cookies are simply never attached to a `fetch`/`XHR` request in
+ *     that case, so every call after login would 401 no matter how the client sends the request.
+ *     `None` is what cross-site fetch-based auth requires, and it is safe here because it is only
+ *     ever paired with `Secure` (browsers reject `None` without it) and because mutations are
+ *     additionally guarded by the CSRF double-submit token below, independent of SameSite.
  */
 export function sessionCookieOptions(input: {
   ttlSeconds: number;
@@ -56,7 +65,7 @@ export function sessionCookieOptions(input: {
   return {
     httpOnly: true,
     secure: input.secure,
-    sameSite: 'lax',
+    sameSite: input.domain ? 'lax' : input.secure ? 'none' : 'lax',
     path: '/',
     maxAge: input.ttlSeconds,
     ...(input.domain ? { domain: input.domain } : {}),
