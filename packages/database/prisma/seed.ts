@@ -13,9 +13,16 @@
  *      SEED_DEMO=false pnpm db:seed   (platform only)
  */
 
-import { PrismaClient } from '@prisma/client';
+import { findWorkspaceRoot, loadRootEnvFiles } from '@aytracker/config';
 import { SYSTEM_ROLE_DEFINITIONS, hashPassword, hashPin } from '@aytracker/auth';
 import { FEATURE_DEFINITIONS, PLAN_DEFINITIONS } from '@aytracker/billing';
+
+// Before PrismaClient is constructed, and before the import that constructs it. This script is
+// run directly (`tsx prisma/seed.ts`), so it never passes through prisma.config.ts and would
+// otherwise need DATABASE_URL typed in front of every invocation.
+loadRootEnvFiles(findWorkspaceRoot(process.cwd()));
+
+const { PrismaClient } = await import('@prisma/client');
 
 const prisma = new PrismaClient();
 
@@ -272,7 +279,11 @@ async function seedSystemRoles(): Promise<void> {
 async function seedDemoOrganization(): Promise<void> {
   const existing = await prisma.organization.findUnique({ where: { slug: 'demo-factory' } });
   if (existing) {
+    // Idempotent, so `pnpm setup` can be re-run. The credentials are printed anyway: on a second
+    // run they are exactly what a developer came back for, and silence here would send them to
+    // read the seed source to find out what they already have.
     console.log('  demo organization already present — skipping');
+    printDemoCredentials();
     return;
   }
 
@@ -945,6 +956,10 @@ async function seedDemoOrganization(): Promise<void> {
     },
   });
 
+  printDemoCredentials();
+}
+
+function printDemoCredentials(): void {
   console.log('  demo organization: demo-factory');
   console.log(`    admin:  admin@demo-factory.example / ${DEMO_ADMIN_PASSWORD}`);
   console.log(`    worker: 1001 / ${DEMO_WORKER_PIN} (org slug: demo-factory)`);
