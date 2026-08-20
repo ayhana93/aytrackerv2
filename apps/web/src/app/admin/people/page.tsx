@@ -49,7 +49,10 @@ const COLUMNS: readonly Column<ActivePosition>[] = [
     header: 'Продължителност',
     numeric: true,
     render: (row) => {
-      const minutes = Math.max(0, Math.round((Date.now() - new Date(row.startedAt).getTime()) / 60000));
+      const minutes = Math.max(
+        0,
+        Math.round((Date.now() - new Date(row.startedAt).getTime()) / 60000),
+      );
       const hours = Math.floor(minutes / 60);
       const rest = minutes % 60;
       return hours > 0 ? `${hours} ч ${rest} мин` : `${rest} мин`;
