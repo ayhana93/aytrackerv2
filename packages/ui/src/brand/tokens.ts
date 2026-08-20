@@ -1,24 +1,27 @@
 /**
- * White-label theming — the plumbing, not the design.
+ * White-label theming — how a customer's brand reaches the interface.
  *
- * IMPORTANT: the visual design of AYtracker has not been decided yet, and is not decided here.
- * This file defines *how* a customer's brand reaches the interface: a small set of semantic CSS
- * custom properties, derived server-side from OrganizationBranding, applied at the root of every
- * portal. The palette below is a neutral, accessible placeholder so the temporary UI is legible
- * during development; it will be replaced wholesale once a design reference is provided.
+ * The product's own colours are not here. They live in `tokens/color.ts`, authored per theme, and
+ * they are what renders when a customer has set nothing. This file is only the override path: a
+ * small set of semantic CSS custom properties, derived server-side from OrganizationBranding.
  *
- * The architectural rules that will survive that replacement:
+ * The rules:
  *   * One application, many brands. Never a build per customer.
- *   * Components consume semantic tokens (`--ay-color-primary`), never a customer's raw hex.
+ *   * Components consume semantic tokens (`--ay-accent`), never a customer's raw hex.
  *   * Contrast is verified against the customer's colour, not assumed — a brand colour that
  *     fails WCAG AA against the surface gets a computed readable foreground rather than
  *     unreadable text.
+ *   * **An unset colour is `null`, never a stand-in value.** A default hex here silently replaces
+ *     the design system's own accent for every tenant that has not branded anything, and because
+ *     it still renders as *a* colour nobody notices. That is exactly what happened: a grey
+ *     placeholder primary overrode the product blue across every screen.
  */
 
 export interface BrandColors {
-  readonly primary: string;
-  readonly secondary: string;
-  readonly accent: string;
+  /** The customer's colour, or null when they have set none and the product palette applies. */
+  readonly primary: string | null;
+  readonly secondary: string | null;
+  readonly accent: string | null;
 }
 
 export interface BrandAssets {
@@ -37,11 +40,16 @@ export interface Brand {
   readonly supportEmail: string | null;
 }
 
-/** Neutral placeholder. Not a design decision — see the note at the top of this file. */
-export const PLACEHOLDER_BRAND: Brand = {
+/**
+ * No customer branding.
+ *
+ * Every colour is null, so nothing is overridden and the design system's own palette renders —
+ * including its per-theme accent, which a single brand hex could not express.
+ */
+export const UNBRANDED: Brand = {
   organizationId: '',
   companyName: 'AYtracker',
-  colors: { primary: '#1f2937', secondary: '#4b5563', accent: '#2563eb' },
+  colors: { primary: null, secondary: null, accent: null },
   assets: { logoUrl: null, logoLightUrl: null, logoDarkUrl: null, faviconUrl: null },
   loginMessage: null,
   supportEmail: null,
@@ -63,18 +71,26 @@ export function brandToCssVariables(
   brand: Brand,
   mode: ThemeMode = 'light',
 ): Record<string, string> {
-  const onPrimary = readableForeground(brand.colors.primary);
-  const onAccent = readableForeground(brand.colors.accent);
-
-  return {
-    '--ay-color-primary': brand.colors.primary,
-    '--ay-color-primary-foreground': onPrimary,
-    '--ay-color-secondary': brand.colors.secondary,
-    '--ay-color-accent': brand.colors.accent,
-    '--ay-color-accent-foreground': onAccent,
+  const variables: Record<string, string> = {
     '--ay-color-surface': mode === 'dark' ? '#0f172a' : '#ffffff',
     '--ay-color-surface-foreground': mode === 'dark' ? '#f8fafc' : '#0f172a',
   };
+
+  // A colour the customer has not set emits no variable at all, so the design system's own token
+  // stands. Emitting a fallback hex here would be the same mistake in a different place.
+  if (brand.colors.primary) {
+    variables['--ay-color-primary'] = brand.colors.primary;
+    variables['--ay-color-primary-foreground'] = readableForeground(brand.colors.primary);
+  }
+  if (brand.colors.secondary) {
+    variables['--ay-color-secondary'] = brand.colors.secondary;
+  }
+  if (brand.colors.accent) {
+    variables['--ay-color-accent'] = brand.colors.accent;
+    variables['--ay-color-accent-foreground'] = readableForeground(brand.colors.accent);
+  }
+
+  return variables;
 }
 
 export function cssVariablesToStyleString(variables: Record<string, string>): string {
@@ -111,6 +127,23 @@ export function readableForeground(backgroundHex: string): string {
   return contrastRatio('#ffffff', backgroundHex) >= contrastRatio('#000000', backgroundHex)
     ? '#ffffff'
     : '#000000';
+}
+
+/**
+ * How far a colour clears the WCAG bar, as three states rather than a boolean.
+ *
+ * A boolean forces a choice of bar, and whichever one is chosen the answer is misleading half the
+ * time: 3.5:1 announced as "AA" is a lie for body text, and announced as "fails" is a lie for a
+ * heading. The branding screen shows all three so a customer picking a colour knows exactly what
+ * they are trading.
+ */
+export type ContrastGrade = 'AA' | 'AA_LARGE' | 'FAIL';
+
+export function gradeContrast(foreground: string, background: string): ContrastGrade {
+  const ratio = contrastRatio(foreground, background);
+  if (ratio >= 4.5) return 'AA';
+  if (ratio >= 3) return 'AA_LARGE';
+  return 'FAIL';
 }
 
 export function meetsContrastAA(

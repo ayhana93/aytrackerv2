@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ThemeMode } from '../tokens';
-import { PLACEHOLDER_BRAND, type Brand } from '../brand/tokens';
+import { UNBRANDED, type Brand } from '../brand/tokens';
 
 export type ThemePreference = ThemeMode | 'system';
 
@@ -63,7 +63,7 @@ export interface ThemeProviderProps {
 
 export function ThemeProvider({
   children,
-  brand = PLACEHOLDER_BRAND,
+  brand = UNBRANDED,
   defaultPreference = 'system',
 }: ThemeProviderProps) {
   const [preference, setPreferenceState] = useState<ThemePreference>(defaultPreference);

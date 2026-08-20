@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
-import { PLACEHOLDER_BRAND, ThemeProvider, themeInitScript, themeStyleTag } from '@aytracker/ui';
+import { ThemeProvider, UNBRANDED, themeInitScript, themeStyleTag } from '@aytracker/ui';
 import '@aytracker/ui/styles.css';
 import './globals.css';
 
@@ -41,9 +41,9 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
-  // The neutral placeholder here; a tenant-scoped route resolves the real brand from
-  // OrganizationBranding and passes it to both the style tag and the provider.
-  const brand = PLACEHOLDER_BRAND;
+  // Unbranded here, so the product's own palette renders. A tenant-scoped route resolves the real
+  // brand from OrganizationBranding and passes it to both the style tag and the provider.
+  const brand = UNBRANDED;
 
   return (
     <html lang="bg" suppressHydrationWarning>

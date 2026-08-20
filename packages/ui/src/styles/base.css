@@ -598,6 +598,413 @@ a {
 }
 
 /* ===========================================================================
+   ADMIN SHELL
+   ===========================================================================
+   The desktop counterpart to the portal. Two structural regions: a dark
+   sidebar that recedes, and a light content area that comes forward. That
+   relationship holds in both themes — in dark the sidebar goes *darker* than
+   the content rather than lighter, so the hierarchy never inverts.
+   =========================================================================== */
+
+.ay-admin {
+  display: grid;
+  grid-template-columns: var(--ay-sidebar-width) minmax(0, 1fr);
+  min-height: 100dvh;
+  background: var(--ay-bg);
+}
+
+.ay-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ay-space-1);
+  padding: var(--ay-space-5) var(--ay-space-3);
+  padding-top: calc(var(--ay-space-5) + env(safe-area-inset-top, 0px));
+  background: var(--ay-nav-bg);
+  border-right: 1px solid var(--ay-nav-border);
+  overflow-y: auto;
+}
+
+.ay-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ay-space-3);
+  padding: 0 var(--ay-space-3) var(--ay-space-5);
+  color: var(--ay-nav-text-active);
+}
+
+.ay-sidebar-mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--ay-radius-md);
+  background: var(--ay-accent);
+  color: var(--ay-text-on-accent);
+  font-weight: 700;
+}
+
+.ay-sidebar-section {
+  padding: var(--ay-space-5) var(--ay-space-3) var(--ay-space-2);
+  color: var(--ay-nav-text);
+  font-size: var(--ay-type-overline-size);
+  letter-spacing: var(--ay-type-overline-tracking);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.ay-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ay-space-3);
+  width: 100%;
+  min-height: var(--ay-touch-min);
+  padding: 0 var(--ay-space-3);
+  border: 0;
+  border-radius: var(--ay-radius-md);
+  background: transparent;
+  color: var(--ay-nav-text);
+  font-size: var(--ay-type-small-size);
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+  /* Navigation is used dozens of times a day, so only colour moves — no travel, no scale. */
+  transition:
+    background var(--ay-duration-press) ease,
+    color var(--ay-duration-press) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ay-nav-item:hover {
+    background: var(--ay-nav-active-bg-soft);
+    color: var(--ay-nav-text-active);
+  }
+}
+
+.ay-nav-item[aria-current='page'] {
+  background: var(--ay-nav-active-bg);
+  color: var(--ay-text-on-accent);
+}
+
+.ay-nav-icon {
+  width: 1.25rem;
+  text-align: center;
+  opacity: 0.9;
+}
+
+.ay-admin-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ay-admin-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ay-space-4);
+  padding: var(--ay-space-4) var(--ay-space-6);
+  background: var(--ay-chrome);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid var(--ay-chrome-border);
+}
+
+.ay-admin-body {
+  flex: 1;
+  padding: var(--ay-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ay-space-5);
+}
+
+/*
+ * Below the sidebar's breakpoint the layout stacks and the sidebar becomes a horizontal
+ * scroller. A supervisor checking the line from a tablet gets the same information, not a
+ * cut-down version of it.
+ */
+@media (max-width: 60rem) {
+  .ay-admin {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ay-sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--ay-space-2);
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--ay-nav-border);
+  }
+  .ay-sidebar-brand,
+  .ay-sidebar-section {
+    padding: 0 var(--ay-space-2);
+  }
+  .ay-sidebar-section {
+    display: none;
+  }
+  .ay-nav-item {
+    width: auto;
+    white-space: nowrap;
+  }
+  .ay-admin-header,
+  .ay-admin-body {
+    padding: var(--ay-space-4);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ay-admin-header {
+    background: var(--ay-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* ===========================================================================
+   KPI GRID
+   =========================================================================== */
+
+.ay-grid {
+  display: grid;
+  gap: var(--ay-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.ay-grid-wide {
+  display: grid;
+  gap: var(--ay-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+}
+
+.ay-kpi-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ay-space-2);
+  color: var(--ay-text-muted);
+  font-size: var(--ay-type-caption-size);
+  letter-spacing: var(--ay-type-caption-tracking);
+}
+
+.ay-kpi-value {
+  margin-top: var(--ay-space-2);
+  font-size: var(--ay-type-metric-size);
+  line-height: var(--ay-type-metric-leading);
+  letter-spacing: var(--ay-type-metric-tracking);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: var(--ay-font-numeric);
+}
+
+.ay-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--ay-type-caption-size);
+  font-weight: 600;
+}
+
+.ay-delta[data-direction='up'] {
+  color: var(--ay-state-working-text);
+}
+
+.ay-delta[data-direction='down'] {
+  color: var(--ay-danger);
+}
+
+.ay-delta[data-direction='flat'] {
+  color: var(--ay-text-muted);
+}
+
+/* ===========================================================================
+   TABLE
+   ===========================================================================
+   Wrapped in its own scroller: a wide fleet table must never make the page
+   scroll sideways.
+   =========================================================================== */
+
+.ay-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ay-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ay-type-small-size);
+}
+
+.ay-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--ay-space-3) var(--ay-space-4);
+  background: var(--ay-surface-sunken);
+  border-bottom: 1px solid var(--ay-border);
+  color: var(--ay-text-muted);
+  font-size: var(--ay-type-overline-size);
+  letter-spacing: var(--ay-type-overline-tracking);
+  text-transform: uppercase;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ay-table td {
+  padding: var(--ay-space-3) var(--ay-space-4);
+  border-bottom: 1px solid var(--ay-border);
+  vertical-align: middle;
+}
+
+.ay-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ay-table tbody tr:hover td {
+    background: var(--ay-surface-sunken);
+  }
+}
+
+/* Figures line up column-wise only if they are tabular and right-aligned. */
+.ay-table .ay-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: var(--ay-font-numeric);
+  white-space: nowrap;
+}
+
+/* ===========================================================================
+   CHARTS
+   ===========================================================================
+   Inline SVG, no charting library. A dependency that ships a canvas renderer
+   and its own colour scale would be larger than this whole package and would
+   not read the theme tokens.
+   =========================================================================== */
+
+.ay-chart {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.ay-chart-grid {
+  stroke: var(--ay-chart-grid);
+  stroke-width: 1;
+}
+
+.ay-chart-axis {
+  fill: var(--ay-chart-axis);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ay-chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ay-chart-area {
+  stroke: none;
+  opacity: 0.12;
+}
+
+.ay-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ay-space-3) var(--ay-space-4);
+  margin-top: var(--ay-space-3);
+}
+
+.ay-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ay-space-2);
+  font-size: var(--ay-type-caption-size);
+  color: var(--ay-text-muted);
+}
+
+.ay-legend-swatch {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 3px;
+  flex: none;
+}
+
+.ay-bar-track {
+  height: 0.5rem;
+  border-radius: var(--ay-radius-full);
+  background: var(--ay-surface-sunken);
+  overflow: hidden;
+}
+
+.ay-bar-fill {
+  height: 100%;
+  border-radius: var(--ay-radius-full);
+  /* Width is the only thing that moves, and it is a layout property — acceptable here because
+     it changes on a data refresh, not on every frame of an interaction. */
+  transition: width var(--ay-duration-screen) var(--ay-ease-out);
+}
+
+/* ===========================================================================
+   FORM CONTROLS
+   =========================================================================== */
+
+.ay-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ay-space-2);
+}
+
+.ay-label {
+  font-size: var(--ay-type-caption-size);
+  font-weight: 600;
+  color: var(--ay-text-muted);
+}
+
+.ay-input {
+  min-height: var(--ay-touch-min);
+  padding: 0 var(--ay-space-3);
+  border: 1px solid var(--ay-border-strong);
+  border-radius: var(--ay-radius-md);
+  background: var(--ay-surface);
+  color: var(--ay-text);
+  transition: border-color var(--ay-duration-press) ease;
+}
+
+.ay-input:focus {
+  outline: none;
+  border-color: var(--ay-accent);
+  box-shadow: 0 0 0 3px var(--ay-accent-soft);
+}
+
+.ay-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ay-space-3);
+}
+
+.ay-swatch {
+  width: var(--ay-touch-min);
+  height: var(--ay-touch-min);
+  padding: 0;
+  border: 1px solid var(--ay-border-strong);
+  border-radius: var(--ay-radius-md);
+  background: none;
+  cursor: pointer;
+}
+
+/* ===========================================================================
    REDUCED MOTION
    =========================================================================== */
 
@@ -616,5 +1023,8 @@ a {
   }
   .ay-tracking-dot[data-state='ACTIVE'] {
     animation-duration: 4s;
+  }
+  .ay-bar-fill {
+    transition: none;
   }
 }

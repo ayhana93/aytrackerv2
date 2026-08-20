@@ -70,6 +70,7 @@ export function buildThemeVariables(input: {
     '--ay-nav-text': colors.navText,
     '--ay-nav-text-active': colors.navTextActive,
     '--ay-nav-active-bg': colors.navActiveBg,
+    '--ay-nav-active-bg-soft': colors.navHoverBg,
     '--ay-nav-border': colors.navBorder,
 
     '--ay-chrome': colors.chrome,
@@ -124,7 +125,7 @@ export function buildThemeVariables(input: {
   }
 
   if (input.brand) {
-    Object.assign(vars, brandOverrides(input.brand, input.mode));
+    Object.assign(vars, brandAccentVariables(input.brand, input.mode));
   }
 
   return vars;
@@ -137,12 +138,16 @@ export function buildThemeVariables(input: {
  * customer's colour rather than configured, so a customer whose brand is a pale yellow gets
  * black text on their buttons instead of unreadable white. Accessibility is not a setting the
  * customer can switch off by picking a colour.
+ *
+ * Exported so the branding settings screen can scope these onto its live preview and show the
+ * customer the real thing. A preview that reimplemented the mapping would drift from the runtime,
+ * and the first person to notice would be a customer who approved one look and shipped another.
  */
-function brandOverrides(brand: Brand, mode: ThemeMode): Record<string, string> {
+export function brandAccentVariables(brand: Brand, mode: ThemeMode): Record<string, string> {
   const overrides: Record<string, string> = {};
   const primary = brand.colors.primary;
 
-  if (isHexColor(primary)) {
+  if (primary && isHexColor(primary)) {
     overrides['--ay-accent'] = primary;
     overrides['--ay-text-on-accent'] = readableForeground(primary);
     overrides['--ay-accent-hover'] = shiftLightness(primary, mode === 'dark' ? 0.12 : -0.08);
@@ -153,7 +158,7 @@ function brandOverrides(brand: Brand, mode: ThemeMode): Record<string, string> {
     overrides['--ay-nav-active-bg'] = primary;
     overrides['--ay-focus-ring'] = primary;
   }
-  if (isHexColor(brand.colors.accent)) {
+  if (brand.colors.accent && isHexColor(brand.colors.accent)) {
     overrides['--ay-brand-accent'] = brand.colors.accent;
   }
   return overrides;

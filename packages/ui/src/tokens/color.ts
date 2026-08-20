@@ -58,6 +58,13 @@ export interface ColorTokens {
   readonly navText: string;
   readonly navTextActive: string;
   readonly navActiveBg: string;
+  /**
+   * Hover on a nav item that is not the current page.
+   *
+   * Deliberately not the active background at reduced opacity: hovering must never look like
+   * "you are here", or the sidebar stops answering the one question it exists to answer.
+   */
+  readonly navHoverBg: string;
   readonly navBorder: string;
 
   /** Translucent chrome (tab bars, sticky headers). Sits over scrolling content. */
@@ -96,7 +103,10 @@ export const lightColors: ColorTokens = {
   borderStrong: '#CBD5E1',
 
   text: '#0F172A',
-  textMuted: '#64748B',
+  // Measured against the page ground (#F4F6FA), not against white. A caption sits directly on the
+  // ground as often as it sits on a card, and the lighter #64748B cleared AA on white while
+  // missing it on the ground — readable in a component preview, marginal on the actual page.
+  textMuted: '#5B6879',
   textSubtle: '#94A3B8',
   textOnAccent: '#FFFFFF',
 
@@ -122,6 +132,7 @@ export const lightColors: ColorTokens = {
   navText: '#94A3B8',
   navTextActive: '#FFFFFF',
   navActiveBg: '#2563EB',
+  navHoverBg: 'rgba(255, 255, 255, 0.06)',
   navBorder: '#1F2937',
 
   chrome: 'rgba(255, 255, 255, 0.72)',
@@ -149,7 +160,17 @@ export const darkColors: ColorTokens = {
   // mush. Anything genuinely decorative uses `textSubtle`.
   textMuted: '#94A3B8',
   textSubtle: '#64748B',
-  textOnAccent: '#FFFFFF',
+  /**
+   * Near-black, not white — and this is the consequence of lifting the accent below.
+   *
+   * `accent` is lifted so it reads as *text* on a dark ground. That same lift makes it a lighter
+   * *fill*, and white on #3B82F6 measures 3.68:1 — under AA for a primary button label. Black
+   * against the same fill measures 5.71:1. Following the palette's own rule, the foreground is
+   * chosen by measurement rather than by assuming white, which is what a light-blue button with
+   * dark text amounts to. The alternative — darkening the fill — gives a muddy button on a
+   * near-black ground and costs the accent its legibility as text.
+   */
+  textOnAccent: '#0B1220',
 
   // Lifted one step from the light palette. #2563EB on a black ground is heavy and dim.
   accent: '#3B82F6',
@@ -175,7 +196,10 @@ export const darkColors: ColorTokens = {
   navBg: '#060A11',
   navText: '#64748B',
   navTextActive: '#F1F5F9',
-  navActiveBg: '#2563EB',
+  // The same value as `accent`, so one foreground token serves both. Keeping the light palette's
+  // #2563EB here would need white text while the accent needs dark — two rules for one idea.
+  navActiveBg: '#3B82F6',
+  navHoverBg: 'rgba(255, 255, 255, 0.05)',
   navBorder: '#161F2E',
 
   chrome: 'rgba(15, 22, 35, 0.72)',

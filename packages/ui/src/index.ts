@@ -16,3 +16,4 @@ export * from './tokens';
 export * from './theme';
 export * from './brand/index';
 export * from './primitives/index';
+export * from './primitives/admin';
