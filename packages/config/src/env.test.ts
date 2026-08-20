@@ -142,3 +142,26 @@ describe('required settings have no defaults', () => {
     expect(message).toContain('SESSION_SECRET');
   });
 });
+
+describe('the port a platform hands us', () => {
+  /**
+   * The failure this prevents: the API bound 3001, Railway's router dialled the port it had
+   * injected as PORT, and every request to the public domain came back 502. Nothing in the app
+   * logged an error — it was listening happily on a port nobody was calling.
+   */
+  it('PORT is used when API_PORT is not set', () => {
+    expect(parseServerEnv({ ...REQUIRED, PORT: '8080' }).API_PORT).toBe(8080);
+  });
+
+  it('an explicit API_PORT still wins', () => {
+    expect(parseServerEnv({ ...REQUIRED, PORT: '8080', API_PORT: '3001' }).API_PORT).toBe(3001);
+  });
+
+  it('a blank PORT falls back to the default', () => {
+    expect(parseServerEnv({ ...REQUIRED, PORT: '' }).API_PORT).toBe(3001);
+  });
+
+  it('neither set means the documented local default', () => {
+    expect(parseServerEnv({ ...REQUIRED }).API_PORT).toBe(3001);
+  });
+});

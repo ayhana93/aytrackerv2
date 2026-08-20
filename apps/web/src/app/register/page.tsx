@@ -56,6 +56,17 @@ export default function RegisterPage() {
           setError('Проверете попълнените данни и опитайте отново.');
           return;
         }
+        // Told apart from a rejected registration on purpose: nothing the person typed is wrong,
+        // and asking them to check their details would send them looking for a mistake that is
+        // not there.
+        if (caught instanceof ApiError && caught.code === 'network.unreachable') {
+          setError('Няма връзка със сървъра. Проверете интернет връзката и опитайте отново.');
+          return;
+        }
+        if (caught instanceof ApiError && caught.status >= 500) {
+          setError('Възникна грешка в сървъра. Опитайте отново след малко.');
+          return;
+        }
         setError('Регистрацията не беше успешна. Опитайте отново.');
       });
   };

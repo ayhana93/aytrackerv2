@@ -30,6 +30,7 @@ export const serverEnvSchema = z
 
     APP_URL: nonEmpty.url(),
     API_URL: nonEmpty.url(),
+    // Defaulted from PORT when that is set — see `withPlatformPort`.
     API_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
     CORS_ALLOWED_ORIGINS: csv.default('http://localhost:3000'),
 
@@ -139,8 +140,24 @@ function withoutEmptyValues(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return cleaned;
 }
 
+/**
+ * `PORT` is how a platform says which port to listen on.
+ *
+ * Railway, Heroku, Render and Cloud Run all inject it, and their routers connect to that port and
+ * nothing else. The API binding its own `API_PORT` regardless meant the router dialled a port
+ * nobody was listening on: every request to the public domain came back 502 "connection refused",
+ * which the browser reports as a failed fetch and the sign-up screen reports as "registration
+ * failed" — an outage that looks like a broken form.
+ *
+ * `API_PORT` still wins when it is set explicitly, so a local `.env` keeps its own value.
+ */
+function withPlatformPort(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (source.API_PORT || !source.PORT) return source;
+  return { ...source, API_PORT: source.PORT };
+}
+
 export function parseServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv {
-  const result = serverEnvSchema.safeParse(withoutEmptyValues(source));
+  const result = serverEnvSchema.safeParse(withPlatformPort(withoutEmptyValues(source)));
   if (!result.success) {
     throw new EnvironmentConfigError(
       result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),

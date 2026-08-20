@@ -35,6 +35,10 @@ export default function LoginPage() {
           setError('Грешен имейл или парола.');
           return;
         }
+        if (caught instanceof ApiError && caught.code === 'network.unreachable') {
+          setError('Няма връзка със сървъра. Проверете интернет връзката и опитайте отново.');
+          return;
+        }
         setError('Неуспешен вход. Опитайте отново.');
       });
   };
