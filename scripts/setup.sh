@@ -102,6 +102,13 @@ step "Applying migrations"
 # them because Prisma's schema language cannot express them. See docs/database.md.
 pnpm db:migrate:deploy 2>&1 | tail -4
 
+step "Building workspace packages"
+# Before the seed, not after. `prisma/seed.ts` imports @aytracker/auth and @aytracker/billing,
+# which resolve to `dist` — on a fresh clone with no build output the seed fails with "Cannot
+# find module". Generating the Prisma client first, because the packages typecheck against it.
+pnpm db:generate 2>&1 | tail -2
+pnpm build 2>&1 | tail -3
+
 step "Seeding demo data"
 pnpm db:seed 2>&1 | tail -8
 
