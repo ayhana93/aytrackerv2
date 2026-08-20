@@ -4,13 +4,11 @@ import {
   AdminBody,
   AdminHeader,
   Badge,
-  BarRow,
   Card,
   CardHeader,
   DataTable,
   Grid,
   Kpi,
-  LineChart,
   ThemeToggle,
   type Column,
 } from '@aytracker/ui';
@@ -20,12 +18,11 @@ import { adminApi, describeError, useApi, type DashboardResponse } from '../../l
  * Admin dashboard.
  *
  * Every number here comes from `/admin/dashboard` in one request. Nothing on this page adds,
- * averages or converts — the browser renders what the server computed, because a total a client
- * can compute is a total a client can change, and these feed cost reports and, in some
- * organizations, pay.
+ * averages or converts — the browser renders what the server computed.
  *
- * Ordered by what a plant manager is checking for: the four numbers, then the shape of the
- * shift, then the two lists that mean somebody has to do something.
+ * Scoped to what this deployment tracks: who is on shift and where the fleet is, in the last day.
+ * Production figures are still computed server-side (other tenants may want them back), but this
+ * screen does not render them — the KPIs, the warnings and the shift list are the whole page.
  */
 
 type ActivePosition = DashboardResponse['activePositions'][number];
@@ -106,10 +103,6 @@ function warningText(warning: DashboardResponse['warnings'][number]): {
   }
 }
 
-function hourLabel(iso: string): string {
-  return new Date(iso).toLocaleTimeString('bg-BG', { hour: '2-digit' });
-}
-
 export default function AdminDashboardPage() {
   const state = useApi(() => adminApi.dashboard(), []);
 
@@ -128,14 +121,7 @@ export default function AdminDashboardPage() {
 
   const data = state.status === 'ready' ? state.data : null;
   const loading = state.status === 'loading';
-
-  // Only every third hour is labelled. Twenty-four labels on a phone-width chart overlap into an
-  // unreadable smear, and the shape is what the chart is for.
-  const hourly = data?.hourly ?? [];
-  const labels = hourly.map((bucket, index) =>
-    index % 3 === 0 ? hourLabel(bucket.hour) : ' '.repeat(index),
-  );
-  const maxArea = Math.max(1, ...(data?.byWorkArea ?? []).map((area) => area.produced));
+  const driving = (data?.activePositions ?? []).filter((row) => row.kind === 'DRIVING').length;
 
   return (
     <>
@@ -152,16 +138,11 @@ export default function AdminDashboardPage() {
       <AdminBody>
         <Grid>
           <Kpi
-            label="Произведено"
-            value={loading ? '—' : (data?.totals.producedGood ?? 0).toLocaleString('bg-BG')}
-            unit="бр."
-            caption={data ? `брак ${data.totals.producedScrap.toLocaleString('bg-BG')}` : undefined}
-          />
-          <Kpi
-            label="Активни позиции"
+            label="На смяна"
             value={loading ? '—' : String(data?.totals.activeWorkers ?? 0)}
             caption="в момента"
           />
+          <Kpi label="На път" value={loading ? '—' : String(driving)} caption="шофьори в момента" />
           <Kpi
             label="Курсове"
             value={loading ? '—' : String(data?.totals.trips ?? 0)}
@@ -180,67 +161,25 @@ export default function AdminDashboardPage() {
           />
         </Grid>
 
-        <Card padded={false}>
-          <CardHeader>
-            <div>
-              <h2 className="ay-h3">Производство по часове</h2>
-              <p className="ay-caption ay-muted">Годна продукция срещу брак</p>
-            </div>
-          </CardHeader>
-          <div style={{ padding: 'var(--ay-space-5)' }}>
-            {hourly.length > 0 ? (
-              <LineChart
-                labels={labels}
-                formatValue={(value) => `${value.toLocaleString('bg-BG')} бр.`}
-                series={[
-                  {
-                    label: 'Годни',
-                    color: 'var(--ay-chart-actual)',
-                    points: hourly.map((bucket) => bucket.good),
-                    area: true,
-                  },
-                  {
-                    label: 'Брак',
-                    color: 'var(--ay-chart-4)',
-                    points: hourly.map((bucket) => bucket.scrap),
-                  },
-                ]}
-              />
-            ) : (
-              <p className="ay-small ay-muted">
-                {loading ? 'Зареждане…' : 'Няма записано производство в този период.'}
-              </p>
-            )}
-          </div>
-        </Card>
-
         <Grid wide>
           <Card padded={false}>
             <CardHeader>
-              <h2 className="ay-h3">Производство по зони</h2>
+              <h2 className="ay-h3">На смяна</h2>
+              {data ? <Badge tone="success">{data.activePositions.length}</Badge> : null}
             </CardHeader>
-            <div
-              style={{
-                padding: 'var(--ay-space-5)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 'var(--ay-space-4)',
-              }}
-            >
-              {(data?.byWorkArea ?? []).map((area, index) => (
-                <BarRow
-                  key={area.name}
-                  label={area.name}
-                  value={area.produced}
-                  max={maxArea}
-                  color={`var(--ay-chart-${(index % 6) + 1})`}
-                  display={area.produced.toLocaleString('bg-BG')}
-                />
-              ))}
-              {data && data.byWorkArea.length === 0 ? (
-                <p className="ay-small ay-muted">Няма данни.</p>
-              ) : null}
-            </div>
+            <DataTable
+              columns={ACTIVE_COLUMNS}
+              rows={(data?.activePositions ?? []).slice(0, 8)}
+              rowKey={(row) => row.id}
+              empty={loading ? 'Зареждане…' : 'Никой не е на смяна в момента.'}
+            />
+            {data && data.activePositions.length > 8 ? (
+              <div style={{ padding: 'var(--ay-space-4) var(--ay-space-5)' }}>
+                <a href="/admin/people" className="ay-small">
+                  Виж всички ({data.activePositions.length}) →
+                </a>
+              </div>
+            ) : null}
           </Card>
 
           <Card padded={false}>
@@ -297,19 +236,6 @@ export default function AdminDashboardPage() {
             </ul>
           </Card>
         </Grid>
-
-        <Card padded={false}>
-          <CardHeader>
-            <h2 className="ay-h3">Активни позиции</h2>
-            {data ? <Badge tone="success">{data.activePositions.length}</Badge> : null}
-          </CardHeader>
-          <DataTable
-            columns={ACTIVE_COLUMNS}
-            rows={data?.activePositions ?? []}
-            rowKey={(row) => row.id}
-            empty={loading ? 'Зареждане…' : 'Никой не е на смяна в момента.'}
-          />
-        </Card>
       </AdminBody>
     </>
   );

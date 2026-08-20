@@ -55,7 +55,10 @@ export async function buildApp(config: AppConfig, services: AppServices): Promis
     contentSecurityPolicy: {
       directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] },
     },
-    crossOriginResourcePolicy: { policy: 'same-site' },
+    // 'same-site' would block the browser from reading a response at all once the web app and
+    // the API are on different registrable domains (e.g. two separate Railway `*.up.railway.app`
+    // services) — the explicit CORS origin allow-list above is what actually governs access.
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
     hsts: config.isProduction ? { maxAge: 31_536_000, includeSubDomains: true } : false,
   });
 
