@@ -1,4 +1,4 @@
-import type { DatabaseClient, PrismaClient } from '@aytracker/database';
+import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
 import type {
   ClientActionId,
@@ -14,6 +14,7 @@ import { ConflictError } from '@aytracker/domain';
 import { createHash } from 'node:crypto';
 import type { BreakInterval, BreakType, ShiftStatus } from '../domain/shift.js';
 import type { PositionChangeSource, PositionSessionState } from '../domain/position-session.js';
+import { PrismaDrivingRepository } from './prisma-driving-repository.js';
 import type {
   IdempotencyStore,
   PositionSessionRepository,
@@ -334,6 +335,7 @@ export class PrismaShiftTransactionRunner implements TransactionRunner {
         shifts: new PrismaShiftRepository(tx),
         breaks: new PrismaShiftBreakRepository(tx),
         positionSessions: new PrismaPositionSessionRepository(tx),
+        driving: new PrismaDrivingRepository(tx),
       }),
     );
   }
@@ -418,7 +420,7 @@ export class PrismaIdempotencyStore implements IdempotencyStore {
       data: {
         state: 'COMPLETED',
         responseStatus: input.status,
-        responseBody: input.response as never,
+        responseBody: input.response as Prisma.InputJsonValue,
       },
     });
   }

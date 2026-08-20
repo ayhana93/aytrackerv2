@@ -117,8 +117,30 @@ export class EnvironmentConfigError extends Error {
   }
 }
 
+/**
+ * An empty variable means "not set".
+ *
+ * `.env.example` lists every optional setting with an empty value, so a developer can see what
+ * exists without hunting through the schema. Copying that file — which is exactly what the setup
+ * instructions say to do — then produced `REDIS_URL=` and boot failed with "Invalid url" for a
+ * setting documented as optional. Every deployment platform behaves the same way: an env var
+ * cleared in a dashboard arrives as `''`, not absent.
+ *
+ * So an empty or whitespace-only value is dropped before validation and the field's own
+ * `.optional()` or `.default()` decides what happens. A *required* field left empty still fails,
+ * and now fails with "Required" rather than a misleading format complaint.
+ */
+function withoutEmptyValues(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const cleaned: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && value.trim() === '') continue;
+    cleaned[key] = value;
+  }
+  return cleaned;
+}
+
 export function parseServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv {
-  const result = serverEnvSchema.safeParse(source);
+  const result = serverEnvSchema.safeParse(withoutEmptyValues(source));
   if (!result.success) {
     throw new EnvironmentConfigError(
       result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),

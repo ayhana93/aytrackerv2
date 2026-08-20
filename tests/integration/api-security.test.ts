@@ -250,7 +250,20 @@ describe('unauthenticated access', () => {
 });
 
 describe('a worker cannot reach the driver portal', () => {
-  it('refuses a worker session on a driver route', async () => {
+  /**
+   * The driver routes are gated on driving context, not on actor type.
+   *
+   * They used to require `actorType === 'DRIVER'`, but a worker who takes a driving position keeps
+   * their existing session and has `driverId` plus the `driver.*` permissions written onto it for
+   * as long as the driving session is open — so an actor-type gate would lock out the very flow
+   * the handoff exists to serve. What the gate now demands is the thing that actually matters:
+   * a resolved driver identity on the session, which only the server can put there.
+   *
+   * A worker who has not begun driving has neither, so the portal stays shut. That is the property
+   * under test here; the positive half — that the same worker gets in once the server has opened a
+   * driving session for them — lives in driving-handoff.test.ts.
+   */
+  it('refuses a worker session that has no open driving session', async () => {
     const worker = await loginWorker();
     const response = await app.inject({
       method: 'GET',
@@ -258,7 +271,19 @@ describe('a worker cannot reach the driver portal', () => {
       headers: { cookie: worker.cookies },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json().error.code).toBe('auth.wrong_actor_type');
+    expect(response.json().error.code).toBe('auth.permission_denied');
+  });
+
+  it('refuses a worker who asks for a driver route with a forged driver id', async () => {
+    const worker = await loginWorker();
+    // Driver identity is never read from the request. Supplying one changes nothing.
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: worker.cookies, 'x-driver-id': 'driver-1' },
+      query: { driverId: 'driver-1' },
+    });
+    expect(response.statusCode).toBe(403);
   });
 });
 

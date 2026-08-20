@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
-import { assertActorType, assertPermission, type Permission } from '@aytracker/auth';
+import { PERMISSIONS, assertActorType, assertPermission, type Permission } from '@aytracker/auth';
+import { ForbiddenError } from '@aytracker/domain';
 import type { Entitlements, FeatureCode } from '@aytracker/billing';
 import type { ActorContext } from '@aytracker/types';
 import type { EntitlementService } from '../services/entitlement-service.js';
@@ -54,6 +55,27 @@ const authorizationPlugin: FastifyPluginAsync<AuthorizationPluginOptions> = asyn
       },
   );
 
+  /**
+   * The driver portal's gate.
+   *
+   * Deliberately a permission check rather than an actor-type check. Two kinds of session
+   * legitimately reach these routes: a driver who logged in at the driver portal, and a worker
+   * who moved onto a driving position and whose session was elevated for the duration. A plain
+   * worker holds no `driver.*` permission and is refused — the actor type alone could not tell
+   * those two workers apart.
+   */
+  app.decorate('requireDriverContext', () => async (request: FastifyRequest) => {
+    const actor = app.requireAuth(request);
+    assertActorType(actor, ['DRIVER', 'WORKER']);
+    assertPermission(actor, PERMISSIONS.DRIVER_PORTAL_ACCESS);
+    if (!actor.driverId) {
+      throw new ForbiddenError(
+        'driver.no_driver_context',
+        'This session is not currently driving.',
+      );
+    }
+  });
+
   app.decorate(
     'requireEntitlement',
     (feature: FeatureCode) => async (request: FastifyRequest, _reply: FastifyReply) => {
@@ -76,6 +98,7 @@ declare module 'fastify' {
     requireEntitlement: (
       feature: FeatureCode,
     ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireDriverContext: () => (request: FastifyRequest) => Promise<void>;
   }
 }
 

@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./brand": "./src/brand/index.ts"
+    "./brand": "./src/brand/index.ts",
+    "./styles.css": "./src/styles/base.css"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
@@ -15,6 +16,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@aytracker/tracking": "workspace:*",
     "@aytracker/types": "workspace:*"
   },
   "peerDependencies": {

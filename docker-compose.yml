@@ -1,0 +1,52 @@
+# Local development dependencies.
+#
+# This is not the production topology — see infrastructure/railway/ for that. It exists so that
+# `pnpm setup` has a database to talk to without anyone installing PostgreSQL by hand, and so the
+# version matches what CI and production run. A developer on 15 and a CI runner on 16 differ in
+# exactly the places this schema leans on: partial unique indexes, generated columns, RLS.
+
+name: aytracker
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aytracker-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aytracker
+      POSTGRES_PASSWORD: aytracker
+      POSTGRES_DB: aytracker
+      # Deterministic collation. Left to the host's locale, ORDER BY on names differs between
+      # machines and a sorted list of workers is not reproducible.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Creates the test database on first boot, so `pnpm test:integration` has somewhere to run.
+      - ./infrastructure/docker/init-databases.sql:/docker-entrypoint-initdb.d/10-databases.sql:ro
+    healthcheck:
+      # `pnpm setup` waits on this rather than sleeping, because "postgres is listening" and
+      # "postgres is ready" are seconds apart and the gap is where flaky setup scripts live.
+      test: ['CMD-SHELL', 'pg_isready -U aytracker -d aytracker']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Optional. The app runs without it — rate limiting and session revocation fall back to
+  # in-process state, which is correct for a single instance and not for several.
+  redis:
+    image: redis:7-alpine
+    container_name: aytracker-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles: ['redis']
+
+volumes:
+  postgres-data:

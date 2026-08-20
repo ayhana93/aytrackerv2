@@ -23,6 +23,10 @@ function position(overrides: Partial<PositionRule> = {}): PositionRule {
   return {
     positionId: 'position-1' as PositionId,
     changeMode: 'QUALIFICATION_REQUIRED',
+    // Every position row carries a kind, so the fixture does too. Eligibility does not branch on
+    // it — the driving rules live in the shifts module — but leaving it out of the default would
+    // let a test pass against a shape the database cannot produce.
+    kind: 'STANDARD',
     status: 'ACTIVE',
     requiredQualificationIds: [EXT_QUAL],
     capacity: null,

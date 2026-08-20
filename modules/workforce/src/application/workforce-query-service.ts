@@ -17,6 +17,8 @@ import type {
 export interface AvailablePosition {
   readonly positionId: PositionId;
   readonly requiresApproval: boolean;
+  /** DRIVING positions route through the vehicle picker before they can be confirmed. */
+  readonly kind: PositionRule['kind'];
 }
 
 /**
@@ -95,7 +97,16 @@ export class WorkforceQueryService {
     }).map((entry) => ({
       positionId: entry.position.positionId,
       requiresApproval: entry.requiresApproval,
+      kind: entry.position.kind,
     }));
+  }
+
+  /** The position's own rules, without an eligibility decision. Used to branch on `kind`. */
+  async positionRule(
+    organizationId: OrganizationId,
+    positionId: PositionId,
+  ): Promise<PositionRule | null> {
+    return this.positions.findRule(organizationId, positionId);
   }
 
   async countActiveWorkers(organizationId: OrganizationId): Promise<number> {

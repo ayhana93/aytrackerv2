@@ -61,3 +61,26 @@ export {
   PrismaShiftTransactionRunner,
   hashRequestBody,
 } from './infrastructure/prisma-repositories.js';
+
+export {
+  DRIVING_SESSION_PERMISSIONS,
+  assertCanDrive,
+  assertCanEndDriving,
+  isDrivingPosition,
+  planAssignment,
+  selectableVehicles,
+  withDrivingPermissions,
+  withoutDrivingPermissions,
+  type AssignmentContext,
+  type AssignmentPlan,
+  type DriverProfile,
+  type DrivingContext,
+  type PositionKind,
+  type SelectableVehicle,
+} from './domain/driving.js';
+
+export type { DrivingRepository } from './domain/ports.js';
+
+export { DrivingCommandService } from './application/driving-commands.js';
+
+export { PrismaDrivingRepository } from './infrastructure/prisma-driving-repository.js';

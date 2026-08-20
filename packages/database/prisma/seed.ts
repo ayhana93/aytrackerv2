@@ -13,9 +13,16 @@
  *      SEED_DEMO=false pnpm db:seed   (platform only)
  */
 
-import { PrismaClient } from '@prisma/client';
+import { findWorkspaceRoot, loadRootEnvFiles } from '@aytracker/config';
 import { SYSTEM_ROLE_DEFINITIONS, hashPassword, hashPin } from '@aytracker/auth';
 import { FEATURE_DEFINITIONS, PLAN_DEFINITIONS } from '@aytracker/billing';
+
+// Before PrismaClient is constructed, and before the import that constructs it. This script is
+// run directly (`tsx prisma/seed.ts`), so it never passes through prisma.config.ts and would
+// otherwise need DATABASE_URL typed in front of every invocation.
+loadRootEnvFiles(findWorkspaceRoot(process.cwd()));
+
+const { PrismaClient } = await import('@prisma/client');
 
 const prisma = new PrismaClient();
 
@@ -272,7 +279,11 @@ async function seedSystemRoles(): Promise<void> {
 async function seedDemoOrganization(): Promise<void> {
   const existing = await prisma.organization.findUnique({ where: { slug: 'demo-factory' } });
   if (existing) {
+    // Idempotent, so `pnpm setup` can be re-run. The credentials are printed anyway: on a second
+    // run they are exactly what a developer came back for, and silence here would send them to
+    // read the seed source to find out what they already have.
     console.log('  demo organization already present — skipping');
+    printDemoCredentials();
     return;
   }
 
@@ -398,6 +409,11 @@ async function seedDemoOrganization(): Promise<void> {
   const painting = await prisma.workArea.create({
     data: { organizationId: organization.id, siteId: site.id, name: 'Painting', code: 'PAINT' },
   });
+  // Driving is a work area like any other. Every position belongs to one, and pretending a driver
+  // stands at the extrusion line would make the work-area reports lie.
+  const transport = await prisma.workArea.create({
+    data: { organizationId: organization.id, siteId: site.id, name: 'Transport', code: 'TRANS' },
+  });
 
   const qualifications = await Promise.all(
     [
@@ -420,6 +436,7 @@ async function seedDemoOrganization(): Promise<void> {
    *   Paint Booth  SUPERVISOR_APPROVAL    — a critical position
    *   Machine 4    QUALIFICATION_REQUIRED — deliberately not granted to the demo worker,
    *                                         so the "not eligible" path is visible in a demo
+   *   Шофьор       INSTANT, kind DRIVING  — hands the worker a vehicle and the driver portal
    */
   const machine1 = await prisma.position.create({
     data: {
@@ -485,6 +502,27 @@ async function seedDemoOrganization(): Promise<void> {
       requiredQualifications: {
         create: [{ organizationId: organization.id, qualificationId: paintQual!.id }],
       },
+    },
+  });
+  /**
+   * The driving position.
+   *
+   * Named in Bulgarian because the demo tenant is Bulgarian, and the behaviour comes from `kind`
+   * rather than the name — a tenant calling it "Chauffeur" would get the same vehicle picker.
+   * Ivan is linked to driver D001 below, so selecting this position in the worker portal offers
+   * him a vehicle and moves him to the driver portal with a trip running.
+   * See docs/driving-handoff.md.
+   */
+  await prisma.position.create({
+    data: {
+      organizationId: organization.id,
+      siteId: site.id,
+      workAreaId: transport.id,
+      name: 'Шофьор',
+      code: 'DRV',
+      kind: 'DRIVING',
+      changeMode: 'INSTANT',
+      qrToken: 'demo-qr-driving',
     },
   });
 
@@ -692,12 +730,34 @@ async function seedDemoOrganization(): Promise<void> {
     },
   });
 
+  // A third vehicle nobody holds, so the picker has both cases to show: the driver's own van at
+  // the top, and a free one below it.
+  await prisma.vehicle.create({
+    data: {
+      organizationId: organization.id,
+      siteId: site.id,
+      registrationNumber: 'CB9012EF',
+      make: 'Renault',
+      model: 'Master',
+      year: 2022,
+      vehicleType: 'VAN',
+      fuelType: 'DIESEL',
+      fuelTankCapacity: '80',
+      odometerCurrent: '61540',
+      averageConsumption: '9.1',
+      consumptionUnit: 'L_PER_100KM',
+    },
+  });
+
+  // Both manual: a fleet manager's long-term decision. The handoff releases only the assignments
+  // it created itself, so ending a trip in the van leaves Ivan still holding it tomorrow.
   await prisma.vehicleAssignment.create({
     data: {
       organizationId: organization.id,
       driverId: driver.id,
       vehicleId: van.id,
       startedAt: new Date(Date.now() - 14 * 86_400_000),
+      isAutomatic: false,
     },
   });
   await prisma.vehicleAssignment.create({
@@ -706,6 +766,7 @@ async function seedDemoOrganization(): Promise<void> {
       driverId: driver2.id,
       vehicleId: truck.id,
       startedAt: new Date(Date.now() - 7 * 86_400_000),
+      isAutomatic: false,
     },
   });
 
@@ -895,6 +956,10 @@ async function seedDemoOrganization(): Promise<void> {
     },
   });
 
+  printDemoCredentials();
+}
+
+function printDemoCredentials(): void {
   console.log('  demo organization: demo-factory');
   console.log(`    admin:  admin@demo-factory.example / ${DEMO_ADMIN_PASSWORD}`);
   console.log(`    worker: 1001 / ${DEMO_WORKER_PIN} (org slug: demo-factory)`);

@@ -1,4 +1,10 @@
-import { buildAppConfig, parseServerEnv, EnvironmentConfigError } from '@aytracker/config';
+import {
+  buildAppConfig,
+  parseServerEnv,
+  EnvironmentConfigError,
+  findWorkspaceRoot,
+  loadRootEnvFiles,
+} from '@aytracker/config';
 import { disconnectPrisma } from '@aytracker/database';
 import { buildApp } from './app.js';
 import { buildServices } from './services/container.js';
@@ -11,6 +17,10 @@ import { buildServices } from './services/container.js';
  * missing value.
  */
 async function main(): Promise<void> {
+  // Development convenience only. Anything already in the environment wins, so a platform's
+  // injected variables are never overridden by a file left in a working copy.
+  loadRootEnvFiles(findWorkspaceRoot(process.cwd()));
+
   let config;
   try {
     config = buildAppConfig(parseServerEnv());

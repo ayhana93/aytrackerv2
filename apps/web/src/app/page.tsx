@@ -1,45 +1,72 @@
+'use client';
+
+import { Badge, Card, ThemeToggle } from '@aytracker/ui';
+
 /**
- * Development landing page.
+ * Development index.
  *
- * A wireframe, deliberately. Per the brief, the visual design is not decided until a design
- * reference is supplied; building a polished landing page now would be deciding it by default.
+ * A directory of the portals while the remaining screens are built, styled with the same tokens
+ * so it exercises the theme rather than opting out of it.
  */
 export default function HomePage() {
   return (
-    <main>
-      <h1>AYtracker</h1>
-      <p>Multi-tenant manufacturing and fleet operations platform.</p>
+    <main className="ay-page">
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '1rem',
+        }}
+      >
+        <div>
+          <h1 className="ay-h1">AYtracker</h1>
+          <p className="ay-small ay-muted">
+            Платформа за производство и автопарк · светла и тъмна тема
+          </p>
+        </div>
+        <ThemeToggle labels={{ light: 'Светла', dark: 'Тъмна', system: 'Системна' }} />
+      </header>
 
-      <section className="placeholder-notice">
-        <h2>Development build</h2>
-        <p>
-          The interface is intentionally unstyled. Architecture, domain logic and the API are built
-          first; the visual design begins once a design reference has been provided.
-        </p>
-      </section>
+      <div className="ay-page-grid">
+        <a href="/worker" style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-2)' }}>
+              <h2 className="ay-h2">Портал на работника</h2>
+              <Badge tone="success">Готов</Badge>
+            </div>
+            <p className="ay-small ay-muted" style={{ marginTop: 'var(--ay-space-2)' }}>
+              Смяна, позиция, бърза смяна на позиция. Изборът на позиция „Шофьор“ води към избор на
+              МПС и прехвърля към портала на шофьора.
+            </p>
+          </Card>
+        </a>
 
-      <section>
-        <h2>Portals</h2>
-        <ul>
-          <li>
-            <a href="/worker">Worker portal</a> — shift, position change, production
-          </li>
-          <li>
-            <a href="/driver">Driver portal</a> — assigned vehicle, trip, tracking
-          </li>
-          <li>
-            <a href="/admin">Admin</a> — workforce, fleet, reporting
-          </li>
-        </ul>
-      </section>
+        <a href="/driver" style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-2)' }}>
+              <h2 className="ay-h2">Портал на шофьора</h2>
+              <Badge tone="success">Готов</Badge>
+            </div>
+            <p className="ay-small ay-muted" style={{ marginTop: 'var(--ay-space-2)' }}>
+              Активен курс, състояние на проследяването и честна информация какво се случва при
+              изгасен екран.
+            </p>
+          </Card>
+        </a>
 
-      <section>
-        <h2>Documentation</h2>
-        <p>
-          Architecture decisions live in <code>docs/</code>. Start with{' '}
-          <code>docs/architecture.md</code>.
-        </p>
-      </section>
+        <a href="/admin" style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-2)' }}>
+              <h2 className="ay-h2">Админ панел</h2>
+              <Badge tone="warning">В процес</Badge>
+            </div>
+            <p className="ay-small ay-muted" style={{ marginTop: 'var(--ay-space-2)' }}>
+              Табло, производство, персонал, автопарк и разходи.
+            </p>
+          </Card>
+        </a>
+      </div>
     </main>
   );
 }

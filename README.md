@@ -9,20 +9,25 @@ Not an ERP. The architecture is built so that adding a module never requires it 
 
 ## Quick start
 
-Requires Node 22, pnpm 10, PostgreSQL 16.
+Requires **Node 22+**, **pnpm 10+**, and Docker (or your own PostgreSQL 16).
 
 ```bash
 pnpm install
-
-createdb aytracker
-cp .env.example .env.local
-# set DATABASE_URL and SESSION_SECRET (openssl rand -base64 48)
-
-pnpm db:migrate:deploy
-pnpm db:seed          # prints demo credentials
-
-pnpm dev              # api :3001, web :3000
+pnpm setup      # database, .env.local with a generated secret, migrations, seed
+pnpm dev        # api → :3001   web → :3000
 ```
+
+`pnpm setup` is safe to re-run: it creates what is missing and never overwrites an existing
+`.env.local`. Already running PostgreSQL yourself? `./scripts/setup.sh --no-docker`.
+
+Then open:
+
+| Portal | URL                                |
+| ------ | ---------------------------------- |
+| Worker | http://localhost:3000/worker       |
+| Driver | http://localhost:3000/driver       |
+| Admin  | http://localhost:3000/admin        |
+| Health | http://localhost:3001/health/ready |
 
 ### Demo credentials
 
@@ -37,13 +42,41 @@ Driver   driver D001 / PIN 571364     (organization: demo-factory)
 Override with `SEED_ADMIN_PASSWORD`, `SEED_WORKER_PIN`, `SEED_DRIVER_PIN`.
 `SEED_DEMO=false` seeds only platform reference data — what production runs.
 
+Worker 1001 (Иван) is linked to driver D001, so the worker portal shows the **Шофьор** position:
+selecting it offers a vehicle and hands off to the driver portal with a trip recording. See
+[docs/driving-handoff.md](docs/driving-handoff.md).
+
+### Configuration
+
+One `.env.local` at the repository root, read by the API, the web app and every database command.
+`.env.example` documents every setting; an empty value means "not set".
+
+`SESSION_SECRET` is the only one you must supply, and `pnpm setup` generates it. In production
+every value comes from the platform's environment — a file is never deployed.
+
+### Doing it by hand
+
+```bash
+docker compose up -d postgres        # or use your own PostgreSQL 16
+cp .env.example .env.local
+sed -i "s|^SESSION_SECRET=.*|SESSION_SECRET=$(openssl rand -base64 48)|" .env.local
+pnpm db:migrate:deploy
+pnpm db:seed
+pnpm dev
+```
+
 ---
 
 ## Commands
 
 ```bash
+pnpm setup              # from a fresh clone to a running application
 pnpm build              # turbo build, all packages
 pnpm dev                # api + web in watch mode
+
+pnpm db:up              # start PostgreSQL in Docker
+pnpm db:down            # stop it (the volume, and your data, survive)
+pnpm db:logs
 pnpm lint               # eslint, including the architectural import rules
 pnpm typecheck
 pnpm test               # unit tests (fast, no database)
@@ -56,11 +89,12 @@ pnpm db:seed
 pnpm db:studio
 ```
 
-Integration tests want their own database:
+Integration tests run against a real database — the invariants they check (partial unique
+indexes, composite tenant foreign keys, transaction atomicity) do not exist in a mock.
+`docker compose` creates `aytracker_test` on first boot:
 
 ```bash
-createdb aytracker_test
-export TEST_DATABASE_URL="postgresql://…/aytracker_test?schema=public"
+export TEST_DATABASE_URL="postgresql://aytracker:aytracker@localhost:5432/aytracker_test?schema=public"
 DATABASE_URL=$TEST_DATABASE_URL pnpm db:migrate:deploy
 pnpm test:integration
 ```
@@ -108,16 +142,29 @@ Start with [docs/architecture.md](docs/architecture.md).
 
 ## Status
 
-Phases 0–6 and 11–13 are built: architecture, monorepo, database with its invariants, auth and
-multi-tenancy, markets and pricing, entitlements, the core manufacturing domain, the worker and
-driver portal APIs, GPS integrity, and audit.
+Runs end to end: worker and driver portals, admin dashboard, fleet and white-label settings, on a
+Fastify API and a PostgreSQL schema whose invariants are enforced by the database rather than by
+convention.
 
-**Phase 7 — design implementation — is blocked awaiting a design reference.**
+Built: architecture, monorepo, database with its invariants, auth and multi-tenancy, markets and
+pricing, entitlements, the core manufacturing domain, worker and driver portal APIs, GPS
+integrity, audit, the design system in light and dark, and the worker → driver handoff.
 
-The visual design of AYtracker has deliberately not been decided. `packages/ui` contains the
-white-label theming plumbing (semantic tokens derived from `OrganizationBranding`, with WCAG
-contrast checking); `apps/web` contains wireframe placeholders. Building a component library
-before the reference arrives would be choosing the design by accident.
+### One thing worth knowing before you promise it
+
+**A web app cannot record GPS while the phone is locked and the screen is off.** No API, no
+service worker and no manifest flag changes that. The driver portal detects what the device can
+actually do and says so before a trip starts, rather than implying a guarantee the platform will
+not keep.
+
+Delivering it for real needs a native wrapper — Capacitor with a background-location plugin, iOS
+"Always" authorization, an Android foreground service. The complete configuration is written up in
+[docs/tracking-client.md](docs/tracking-client.md); the collector is already behind a port, so the
+driver screen does not change when it arrives.
+
+Either way, silence is reported as a neutral tracking gap. It is never presented as a driver
+having switched tracking off, because from the server a tunnel, a flat battery and a force-quit
+are the same thing.
 
 Full phase table: [docs/architecture.md](docs/architecture.md) § 9.
 Known limitations and tradeoffs: [docs/architecture.md](docs/architecture.md) § 10.
@@ -127,14 +174,24 @@ Known limitations and tradeoffs: [docs/architecture.md](docs/architecture.md) §
 ## Tests
 
 ```
-237 passing
-├── 187 unit          shift duration incl. both DST transitions, eligibility precedence,
-│                     position-session planning, market resolution, pricing and grandfathering,
-│                     EU VAT and reverse charge, GPS distance and gap detection, fuel arithmetic,
-│                     authorization, money, timezones, localization
-└──  50 integration   tenant isolation against a real database, position-change atomicity under
-                      concurrency, HTTP security (actor types, driver trip isolation, CSRF,
-                      session expiry, idempotent replay)
+pnpm test              unit, no database, ~2s
+pnpm test:integration  against real PostgreSQL
+pnpm verify            format + lint + typecheck + unit
+```
+
+```
+unit          shift duration incl. both DST transitions, eligibility precedence,
+              position-session planning, market resolution, pricing and grandfathering,
+              EU VAT and reverse charge, GPS distance and gap detection, fuel arithmetic,
+              authorization, money, timezones, localization, the driving rules,
+              boot configuration, and the design tokens (every CSS variable defined,
+              contrast at AA in both themes, a brand reaching only the accent)
+
+integration   tenant isolation against a real database, position-change atomicity under
+              concurrency, the driving handoff as one transaction, HTTP security
+              (permission gates, driver trip isolation, CSRF, session expiry, idempotent
+              replay), and the schema invariants themselves — so a future migration that
+              drops a partial unique index or an RLS policy fails the suite
 ```
 
 ---
@@ -158,6 +215,8 @@ Known limitations and tradeoffs: [docs/architecture.md](docs/architecture.md) §
 | GPS, tracking states, privacy       | [tracking.md](docs/tracking.md)                         |
 | Offline queue and idempotency       | [offline-sync.md](docs/offline-sync.md)                 |
 | Customer feedback                   | [recommendations.md](docs/recommendations.md)           |
+| Worker → driver handoff             | [driving-handoff.md](docs/driving-handoff.md)           |
+| Recording on the device             | [tracking-client.md](docs/tracking-client.md)           |
 | Endpoints                           | [api.md](docs/api.md)                                   |
 | Railway, migrations, backups        | [deployment.md](docs/deployment.md)                     |
 | Decision records                    | [decisions/](docs/decisions/)                           |

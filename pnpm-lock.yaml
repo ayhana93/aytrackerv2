@@ -144,6 +144,12 @@ importers:
       '@aytracker/localization':
         specifier: workspace:*
         version: link:../../packages/localization
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../../packages/tracking
+      '@aytracker/tracking-client':
+        specifier: workspace:*
+        version: link:../../packages/tracking-client
       '@aytracker/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -328,6 +334,9 @@ importers:
       '@aytracker/module-workforce':
         specifier: workspace:*
         version: link:../workforce
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../../packages/tracking
       '@aytracker/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -424,6 +433,9 @@ importers:
       '@aytracker/billing':
         specifier: workspace:*
         version: link:../billing
+      '@aytracker/config':
+        specifier: workspace:*
+        version: link:../config
       prisma:
         specifier: ^6.3.0
         version: 6.19.3(magicast@0.3.5)(typescript@5.9.3)
@@ -480,6 +492,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/tracking-client:
+    dependencies:
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../tracking
+      '@aytracker/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/types:
     devDependencies:
       typescript:
@@ -488,6 +513,9 @@ importers:
 
   packages/ui:
     dependencies:
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../tracking
       '@aytracker/types':
         specifier: workspace:*
         version: link:../types

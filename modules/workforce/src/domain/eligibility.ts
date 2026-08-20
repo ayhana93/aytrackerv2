@@ -12,9 +12,16 @@ import type { PositionId, QualificationId, WorkerId } from '@aytracker/types';
 
 export type PositionChangeMode = 'INSTANT' | 'QUALIFICATION_REQUIRED' | 'SUPERVISOR_APPROVAL';
 
+/**
+ * What occupying the position means operationally. DRIVING positions hand the worker a vehicle
+ * and a trip rather than a place on the floor — see modules/shifts driving.ts.
+ */
+export type PositionKind = 'STANDARD' | 'DRIVING';
+
 export interface PositionRule {
   readonly positionId: PositionId;
   readonly changeMode: PositionChangeMode;
+  readonly kind: PositionKind;
   readonly status: 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
   /** All qualifications the position requires. The worker must hold every one. */
   readonly requiredQualificationIds: readonly QualificationId[];

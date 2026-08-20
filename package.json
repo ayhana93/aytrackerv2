@@ -10,6 +10,10 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "setup": "./scripts/setup.sh",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",

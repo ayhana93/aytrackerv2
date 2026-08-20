@@ -151,6 +151,31 @@ export class SessionService {
     return result.count;
   }
 
+  /**
+   * Grants or revokes the driving context on a worker's own session.
+   *
+   * A worker who moves onto a driving position needs the driver portal. Rather than issuing a
+   * second session or inventing a fourth actor type, their existing session gains the linked
+   * driver profile plus the driver permission set — for exactly as long as the driving position
+   * session is open.
+   *
+   * Because permissions are snapshotted onto the session, this is also the invalidation: passing
+   * `driverId: null` strips both the identity and the permissions in one write, so the moment a
+   * worker leaves the driving position their session can no longer reach a driver endpoint.
+   */
+  async setDrivingContext(input: {
+    sessionId: string;
+    driverId: string | null;
+    permissions: readonly string[];
+  }): Promise<void> {
+    await this.prisma.session.updateMany({
+      // `actorType: 'WORKER'` in the filter is load-bearing: this must never be able to attach a
+      // driver identity to an admin session.
+      where: { id: input.sessionId, actorType: 'WORKER', revokedAt: null },
+      data: { driverId: input.driverId, permissions: [...input.permissions] },
+    });
+  }
+
   /** Housekeeping: removes sessions that expired long enough ago to be uninteresting. */
   async pruneExpired(before: Date): Promise<number> {
     const result = await this.prisma.session.deleteMany({

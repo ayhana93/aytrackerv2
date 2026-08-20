@@ -4,13 +4,22 @@ import { FEATURES } from '@aytracker/billing';
 import { reconcileClientTimestamp } from '@aytracker/module-shifts';
 import { hashRequestBody } from '@aytracker/module-shifts';
 import {
+  beginDrivingSchema,
   changePositionSchema,
   endBreakSchema,
   endShiftSchema,
   startBreakSchema,
   startShiftSchema,
 } from '@aytracker/validation';
-import type { ClientActionId, PositionId, SiteId, WorkerId } from '@aytracker/types';
+import { withDrivingPermissions, withoutDrivingPermissions } from '@aytracker/module-shifts';
+import type {
+  ClientActionId,
+  PositionId,
+  ShiftTypeId,
+  SiteId,
+  VehicleId,
+  WorkerId,
+} from '@aytracker/types';
 import { ForbiddenError } from '@aytracker/domain';
 import type { AppServices } from '../services/container.js';
 
@@ -195,7 +204,7 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
               organizationId: actor.organizationId,
               workerId: actor.workerId as WorkerId,
               siteId: body.siteId as SiteId,
-              shiftTypeId: body.shiftTypeId as never,
+              shiftTypeId: body.shiftTypeId as ShiftTypeId,
               initialPositionId: body.initialPositionId as PositionId | null,
               at: resolveOccurredAt(request, body.occurredAt),
               startedBySupervisor: false,
@@ -219,12 +228,22 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
         body.clientActionId as ClientActionId,
         'worker.shift.end',
         request.body,
-        () =>
-          services.shifts.endShift({
+        async () => {
+          const result = await services.shifts.endShift({
             organizationId: actor.organizationId,
             workerId: actor.workerId as WorkerId,
             at: resolveOccurredAt(request, body.occurredAt),
-          }),
+          });
+          // A worker who ends their shift while driving loses the elevation with the trip.
+          if (result.endedDriving) {
+            await services.sessions.setDrivingContext({
+              sessionId: actor.sessionId,
+              driverId: null,
+              permissions: withoutDrivingPermissions(actor.permissions),
+            });
+          }
+          return result;
+        },
       );
     });
 
@@ -303,13 +322,106 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
             source = 'MANUAL';
           }
 
-          return services.shifts.changePosition({
+          const result = await services.shifts.changePosition({
             organizationId: actor.organizationId,
             workerId: actor.workerId as WorkerId,
             targetPositionId,
             at,
             source,
           });
+          // Moving back onto the floor ends the trip; the session must lose the driver
+          // permissions in the same breath, or a worker at Machine 2 could still post GPS.
+          if (result.endedDriving) {
+            await services.sessions.setDrivingContext({
+              sessionId: actor.sessionId,
+              driverId: null,
+              permissions: withoutDrivingPermissions(actor.permissions),
+            });
+          }
+          return result;
+        },
+      );
+    });
+
+    /**
+     * The vehicle picker.
+     *
+     * Reached only after tapping a DRIVING position. The list is filtered server-side to
+     * vehicles this driver may actually take — active, and not held by someone else — so a
+     * vehicle the worker cannot have is never sent to the device.
+     */
+    app.get('/positions/:positionId/vehicles', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKER_POSITION_CHANGE);
+      const { positionId } = request.params as { positionId: string };
+
+      const worker = await services.prisma.worker.findFirst({
+        where: { id: actor.workerId!, organizationId: actor.organizationId },
+        select: { siteId: true },
+      });
+
+      const result = await services.driving.listSelectableVehicles({
+        organizationId: actor.organizationId,
+        workerId: actor.workerId as WorkerId,
+        positionId: positionId as PositionId,
+        siteId: (worker?.siteId ?? null) as SiteId | null,
+      });
+
+      return {
+        vehicles: result.vehicles.map((vehicle) => ({
+          id: vehicle.vehicleId,
+          registrationNumber: vehicle.registrationNumber,
+          make: vehicle.make,
+          model: vehicle.model,
+          vehicleType: vehicle.vehicleType,
+          fuelType: vehicle.fuelType,
+          odometer: vehicle.odometer,
+          /** True for the vehicle this driver already holds — the picker puts it first. */
+          isCurrent: vehicle.assignedToSelf,
+        })),
+      };
+    });
+
+    /**
+     * Confirms the handoff: position change + vehicle assignment + trip, in one transaction.
+     *
+     * On success the worker's own session is elevated with the driver permission set, so the
+     * device can go straight to the driver portal without a second login. The elevation lasts
+     * exactly as long as the driving position session.
+     */
+    app.post('/driving/begin', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKER_POSITION_CHANGE);
+      const body = beginDrivingSchema.parse(request.body);
+
+      return idempotent(
+        request,
+        body.clientActionId as ClientActionId,
+        'worker.driving.begin',
+        request.body,
+        async () => {
+          const context = await services.driving.beginDriving({
+            organizationId: actor.organizationId,
+            workerId: actor.workerId as WorkerId,
+            positionId: body.positionId as PositionId,
+            vehicleId: body.vehicleId as VehicleId,
+            label: body.label,
+            startLatitude: body.startLatitude,
+            startLongitude: body.startLongitude,
+            at: resolveOccurredAt(request, body.occurredAt),
+          });
+
+          await services.sessions.setDrivingContext({
+            sessionId: actor.sessionId,
+            driverId: context.driverId,
+            permissions: withDrivingPermissions(actor.permissions),
+          });
+
+          return {
+            ...context,
+            /** The client navigates here. Sent by the server so the route is not hardcoded. */
+            redirectTo: '/driver',
+          };
         },
       );
     });

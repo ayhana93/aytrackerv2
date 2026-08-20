@@ -99,3 +99,27 @@ export const syncBatchSchema = z.object({
 export type StartShiftRequest = z.infer<typeof startShiftSchema>;
 export type ChangePositionRequest = z.infer<typeof changePositionSchema>;
 export type SyncBatchRequest = z.infer<typeof syncBatchSchema>;
+
+/**
+ * Confirming a move onto a DRIVING position.
+ *
+ * Separate from `changePositionSchema` because the shape genuinely differs: this one carries a
+ * vehicle and the coordinates where the trip begins. Folding both into one schema with optional
+ * fields would let a client omit the vehicle on a driving position and reach a half-formed
+ * handoff, which the server would then have to reject anyway.
+ *
+ * The start coordinates are the only client-supplied values the command accepts. They come from
+ * the same gesture that granted location permission, and the server clamps them into the trip
+ * window like any other point.
+ */
+export const beginDrivingSchema = z.object({
+  clientActionId: clientActionIdSchema,
+  positionId: uuidSchema,
+  vehicleId: uuidSchema,
+  label: z.string().trim().max(160).nullable().default(null),
+  startLatitude: z.number().gte(-90).lte(90).nullable().default(null),
+  startLongitude: z.number().gte(-180).lte(180).nullable().default(null),
+  occurredAt: isoDateTimeSchema.optional(),
+});
+
+export type BeginDrivingRequest = z.infer<typeof beginDrivingSchema>;
