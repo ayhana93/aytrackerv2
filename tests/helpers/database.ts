@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process';
 // package is the single place allowed to depend on Prisma, and the tests respect the same rule.
 import { PrismaClient } from '@aytracker/database';
 import { SYSTEM_ROLE_DEFINITIONS, hashPin, hashPassword } from '@aytracker/auth';
+import { FEATURE_DEFINITIONS, PLAN_DEFINITIONS } from '@aytracker/billing';
 
 /**
  * Integration-test harness.
@@ -113,6 +114,52 @@ export async function seedPlatformReferenceData(): Promise<void> {
         },
       });
     }
+  }
+
+  /**
+   * The feature and plan catalogue.
+   *
+   * This used to be missing, and the tests only passed because a `db:seed` run had happened to
+   * leave rows behind in the developer's database. CI runs `db:seed` *after* `test:integration`,
+   * so on a genuinely fresh database `grantFeature` would have thrown the very error it prints —
+   * "Seed platform data first" — from inside the helper that is supposed to be the seeding.
+   *
+   * Catalogue rows, not grants: `createTestTenant` still starts a tenant with no entitlements, so
+   * a paywall test cannot pass by accident. What changes is that a feature *exists* to be
+   * granted, and a plan exists for signup to derive a trial from.
+   */
+  for (const feature of FEATURE_DEFINITIONS) {
+    await prisma.feature.upsert({
+      where: { code: feature.code },
+      update: {},
+      create: { code: feature.code, name: feature.name, moduleCode: feature.moduleCode },
+    });
+  }
+
+  for (const definition of PLAN_DEFINITIONS) {
+    const plan = await prisma.plan.upsert({
+      where: { code: definition.code },
+      update: {},
+      create: {
+        code: definition.code,
+        name: definition.name,
+        tier: definition.tier,
+        description: definition.description,
+        sortOrder: definition.sortOrder,
+        isPublic: definition.isPublic,
+        limits: definition.limits,
+      },
+      select: { id: true },
+    });
+
+    const features = await prisma.feature.findMany({
+      where: { code: { in: [...definition.features] } },
+      select: { id: true },
+    });
+    await prisma.planFeature.createMany({
+      data: features.map((feature) => ({ planId: plan.id, featureId: feature.id })),
+      skipDuplicates: true,
+    });
   }
 }
 

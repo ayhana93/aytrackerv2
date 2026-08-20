@@ -36,11 +36,14 @@ export const radius = {
  */
 export const lightShadow = {
   none: 'none',
-  sm: '0 1px 2px rgba(15, 23, 42, 0.05)',
-  md: '0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04)',
-  lg: '0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.04)',
+  sm: '0 1px 2px rgba(9, 9, 11, 0.04)',
+  // Deliberately slighter than it was. Now that `border` actually draws an edge, the shadow only
+  // has to lift the card off the ground — when both are doing the separating, the result reads
+  // heavy and the page looks like a stack of receipts.
+  md: '0 1px 2px rgba(9, 9, 11, 0.05)',
+  lg: '0 4px 12px rgba(9, 9, 11, 0.07), 0 2px 4px rgba(9, 9, 11, 0.04)',
   /** Sheets and popovers, which must read as clearly detached. */
-  overlay: '0 16px 48px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08)',
+  overlay: '0 16px 48px rgba(9, 9, 11, 0.18), 0 4px 12px rgba(9, 9, 11, 0.08)',
 } as const;
 
 export const darkShadow = {

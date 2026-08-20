@@ -1,6 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, sessionCookieOptions } from '@aytracker/auth';
-import { adminLoginSchema, driverLoginSchema, workerLoginSchema } from '@aytracker/validation';
+import {
+  adminLoginSchema,
+  driverLoginSchema,
+  registerSchema,
+  workerLoginSchema,
+} from '@aytracker/validation';
 import type { AppServices } from '../services/container.js';
 
 /**
@@ -18,6 +23,57 @@ export function authRoutes(services: AppServices): FastifyPluginAsync {
         secure: services.config.useSecureCookies,
         domain: services.config.env.SESSION_COOKIE_DOMAIN || undefined,
       });
+
+    /**
+     * Self-serve signup: a new organization, and its first user.
+     *
+     * The tightest rate limit in the file. Login attempts are cheap to make and cheap to reject;
+     * this one writes an organization, a user, a site and a work area, so an unthrottled endpoint
+     * is a way to fill someone else's database from a laptop.
+     *
+     * Signs the new owner in directly rather than bouncing them to the login form. They proved
+     * they hold the credentials by choosing them thirty milliseconds ago, and making someone type
+     * a password they have just invented is the sort of friction that loses the account.
+     */
+    app.post(
+      '/register',
+      { config: { rateLimit: { max: 5, timeWindow: '1 hour' } } },
+      async (request, reply) => {
+        const body = registerSchema.parse(request.body);
+        const now = new Date();
+
+        const created = await services.registration.register({ ...body, now });
+
+        const ttl = services.config.sessionTtlSeconds.USER;
+        const session = await services.sessions.issue({
+          actorType: 'USER',
+          organizationId: created.organizationId,
+          userId: created.userId,
+          permissions: created.permissions,
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'] ?? null,
+          ttlSeconds: ttl,
+          now,
+        });
+
+        return reply
+          .status(201)
+          .setCookie(SESSION_COOKIE_NAME, session.token, cookieOptions(ttl))
+          .setCookie(CSRF_COOKIE_NAME, session.csrfToken, {
+            ...cookieOptions(ttl),
+            httpOnly: false,
+          })
+          .send({
+            actorType: 'USER',
+            organizationId: created.organizationId,
+            // Returned because the worker and driver login screens need it, and the person who
+            // just signed up is the one who has to give it to their staff.
+            organizationSlug: created.organizationSlug,
+            permissions: created.permissions,
+            expiresAt: session.expiresAt.toISOString(),
+          });
+      },
+    );
 
     /** Admin login. Rate limited per IP — see the rate-limit plugin's per-route override. */
     app.post(
@@ -170,10 +226,24 @@ export function authRoutes(services: AppServices): FastifyPluginAsync {
     /** Who am I. The client renders navigation from this, never from a decoded token. */
     app.get('/me', async (request) => {
       const actor = app.requireAuth(request);
-      const entitlements = await services.entitlements.forOrganization(actor.organizationId);
+      const [entitlements, organization] = await Promise.all([
+        services.entitlements.forOrganization(actor.organizationId),
+        services.prisma.organization.findUnique({
+          where: { id: actor.organizationId },
+          select: { name: true, slug: true },
+        }),
+      ]);
       return {
         actorType: actor.actorType,
         organizationId: actor.organizationId,
+        /**
+         * Carried here because the admin has to be able to read it out to their staff: it is
+         * what a worker types on their own login screen. Somewhere in the interface has to
+         * answer "what do I tell them", and the alternative is an admin who cannot onboard
+         * anyone because the tenant key exists only in a database column.
+         */
+        organizationSlug: organization?.slug ?? null,
+        organizationName: organization?.name ?? null,
         userId: actor.userId ?? null,
         workerId: actor.workerId ?? null,
         driverId: actor.driverId ?? null,

@@ -1,9 +1,16 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { PERMISSIONS, assertPermission } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
-import { NotFoundError } from '@aytracker/domain';
+import { ConflictError, NotFoundError, ValidationError } from '@aytracker/domain';
 import { HaversineRoutingProvider, findTrackingGaps } from '@aytracker/tracking';
 import type { OrganizationId } from '@aytracker/types';
+import {
+  createPositionSchema,
+  createWorkAreaSchema,
+  updatePositionSchema,
+  updateWorkAreaSchema,
+} from '@aytracker/validation';
+import { deriveCode } from '../lib/slug.js';
 import type { AppServices } from '../services/container.js';
 
 /**
@@ -21,17 +28,40 @@ import type { AppServices } from '../services/container.js';
 /** Long enough to be useful, short enough that a mistyped range cannot pull a year of GPS. */
 const MAX_RANGE_DAYS = 92;
 
-function resolveRange(query: { from?: string; to?: string }, now: Date): { from: Date; to: Date } {
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function resolveRange(
+  query: { from?: string; to?: string },
+  now: Date,
+  defaultSpanMs: number = ONE_DAY_MS,
+): { from: Date; to: Date } {
   const to = query.to ? new Date(query.to) : now;
-  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 24 * 60 * 60 * 1000);
+  const from = query.from ? new Date(query.from) : new Date(to.getTime() - defaultSpanMs);
 
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-    return { from: new Date(now.getTime() - 24 * 60 * 60 * 1000), to: now };
+    return { from: new Date(now.getTime() - defaultSpanMs), to: now };
   }
 
   const span = to.getTime() - from.getTime();
-  const max = MAX_RANGE_DAYS * 24 * 60 * 60 * 1000;
+  const max = MAX_RANGE_DAYS * ONE_DAY_MS;
   return { from: span > max ? new Date(to.getTime() - max) : from, to };
+}
+
+/**
+ * How long a position session has run.
+ *
+ * `durationSeconds` is written by the server when a session closes, and it is the value to trust
+ * for a closed one — a supervisor may have corrected the times, and recomputing from the
+ * timestamps would silently discard that correction. An open session has no stored duration, so
+ * it is measured to now and the caller is told it is still running.
+ */
+function elapsedSeconds(
+  session: { startedAt: Date; endedAt: Date | null; durationSeconds: number | null },
+  now: Date,
+): number {
+  if (session.durationSeconds !== null) return session.durationSeconds;
+  const end = session.endedAt ?? now;
+  return Math.max(0, Math.round((end.getTime() - session.startedAt.getTime()) / 1000));
 }
 
 export function adminRoutes(services: AppServices): FastifyPluginAsync {
@@ -112,6 +142,121 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
           onBreak: session.shift.status === 'ON_BREAK',
         })),
         warnings,
+      };
+    });
+
+    /**
+     * Who worked where, and for how long.
+     *
+     * Returns both the individual sessions and a per-person roll-up, computed here. The roll-up
+     * is not something the browser should derive from the rows it happens to have been sent:
+     * the list is capped, so a client summing what it received would quietly report a smaller
+     * total than the truth the moment an organization crosses that cap — and this is the figure
+     * people use to check a payslip.
+     *
+     * Open sessions are included and counted up to now. Excluding them would show a worker who
+     * has been on the line since 06:00 as having worked nothing today.
+     */
+    app.get('/history', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SHIFTS_READ);
+      const organizationId = actor.organizationId;
+      const now = services.clock.now();
+
+      const query = request.query as {
+        from?: string;
+        to?: string;
+        workerId?: string;
+        workAreaId?: string;
+        limit?: string;
+      };
+      // A week rather than the dashboard's day: "who worked where" is a question asked about a
+      // period that has finished, not about right now.
+      const { from, to } = resolveRange(query, now, 7 * 24 * 60 * 60 * 1000);
+
+      const where = {
+        organizationId,
+        startedAt: { gte: from, lte: to },
+        ...(query.workerId ? { workerId: query.workerId } : {}),
+        ...(query.workAreaId ? { position: { workAreaId: query.workAreaId } } : {}),
+      };
+
+      const sessions = await services.prisma.positionSession.findMany({
+        where,
+        select: {
+          id: true,
+          startedAt: true,
+          endedAt: true,
+          durationSeconds: true,
+          source: true,
+          correctedAt: true,
+          worker: { select: { id: true, firstName: true, lastName: true, employeeNumber: true } },
+          position: {
+            select: { id: true, name: true, kind: true, workArea: { select: { name: true } } },
+          },
+        },
+        orderBy: { startedAt: 'desc' },
+        take: Math.min(Number(query.limit ?? 250), 1000),
+      });
+
+      /**
+       * The roll-up runs over every matching row, not the page above.
+       *
+       * A second query rather than reusing `sessions`, because `take` caps that one. Selected
+       * narrowly — four columns and no joins — so the wide read stays the capped one.
+       */
+      const allForTotals = await services.prisma.positionSession.findMany({
+        where,
+        select: {
+          startedAt: true,
+          endedAt: true,
+          durationSeconds: true,
+          workerId: true,
+          worker: { select: { firstName: true, lastName: true } },
+        },
+      });
+
+      const totals = new Map<
+        string,
+        { workerId: string; worker: string; seconds: number; sessions: number; open: boolean }
+      >();
+      for (const row of allForTotals) {
+        const entry = totals.get(row.workerId) ?? {
+          workerId: row.workerId,
+          worker: `${row.worker.firstName} ${row.worker.lastName}`,
+          seconds: 0,
+          sessions: 0,
+          open: false,
+        };
+        entry.seconds += elapsedSeconds(row, now);
+        entry.sessions += 1;
+        if (row.endedAt === null) entry.open = true;
+        totals.set(row.workerId, entry);
+      }
+
+      return {
+        range: { from: from.toISOString(), to: to.toISOString() },
+        sessions: sessions.map((session) => ({
+          id: session.id,
+          worker: `${session.worker.firstName} ${session.worker.lastName}`,
+          workerId: session.worker.id,
+          employeeNumber: session.worker.employeeNumber,
+          position: session.position.name,
+          positionKind: session.position.kind,
+          workArea: session.position.workArea?.name ?? null,
+          startedAt: session.startedAt.toISOString(),
+          endedAt: session.endedAt?.toISOString() ?? null,
+          seconds: elapsedSeconds(session, now),
+          /** Still open. The duration is "so far", and the screen has to say so. */
+          isOpen: session.endedAt === null,
+          source: session.source,
+          // Surfaced rather than hidden: a corrected row is one a supervisor changed by hand, and
+          // anyone checking hours against a payslip is entitled to know which those are.
+          wasCorrected: session.correctedAt !== null,
+        })),
+        byWorker: [...totals.values()].sort((a, b) => b.seconds - a.seconds),
+        /** True when the list was capped, so the screen can say so rather than imply completeness. */
+        truncated: sessions.length < allForTotals.length,
       };
     });
 
@@ -336,6 +481,263 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       },
     );
 
+    /* ------------------------------------------------- work areas & positions */
+
+    /**
+     * The organization's structure: every work area with the positions inside it.
+     *
+     * Returned as one nested tree rather than two flat lists, because that is the shape of the
+     * question. A screen that fetched areas and positions separately would have to join them in
+     * the browser and would render an area with no positions during the gap between the two
+     * responses — which looks exactly like an area that has none.
+     *
+     * `occupied` is live: how many people are standing on that position right now. It is the
+     * difference between a configuration screen and an operations one.
+     */
+    app.get('/areas', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.POSITIONS_READ);
+      const organizationId = actor.organizationId;
+
+      const [areas, openSessions] = await Promise.all([
+        services.prisma.workArea.findMany({
+          where: { organizationId, status: { not: 'ARCHIVED' } },
+          select: {
+            id: true,
+            name: true,
+            code: true,
+            description: true,
+            status: true,
+            positions: {
+              where: { status: { not: 'ARCHIVED' } },
+              select: {
+                id: true,
+                name: true,
+                code: true,
+                kind: true,
+                capacity: true,
+                status: true,
+              },
+              orderBy: { name: 'asc' },
+            },
+          },
+          orderBy: { name: 'asc' },
+        }),
+        services.prisma.positionSession.groupBy({
+          by: ['positionId'],
+          where: { organizationId, endedAt: null },
+          _count: { _all: true },
+        }),
+      ]);
+
+      const occupancy = new Map(openSessions.map((row) => [row.positionId, row._count._all]));
+
+      return {
+        areas: areas.map((area) => ({
+          id: area.id,
+          name: area.name,
+          code: area.code,
+          description: area.description,
+          status: area.status,
+          positions: area.positions.map((position) => ({
+            id: position.id,
+            name: position.name,
+            code: position.code,
+            kind: position.kind,
+            capacity: position.capacity,
+            status: position.status,
+            occupied: occupancy.get(position.id) ?? 0,
+          })),
+        })),
+      };
+    });
+
+    /** Create a work area. */
+    app.post('/areas', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.POSITIONS_MANAGE);
+      const body = createWorkAreaSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+
+      /**
+       * The site is resolved server-side, never sent.
+       *
+       * Most organizations have exactly one, and asking someone to pick it before they can name a
+       * zone is a question with one possible answer. Multi-site organizations get a site picker
+       * when they get a second site — until then this is the honest simplification, not a
+       * limitation being hidden.
+       */
+      const site = await services.prisma.site.findFirst({
+        where: { organizationId, status: 'ACTIVE' },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (!site) {
+        throw new ValidationError(
+          'site.missing',
+          'This organization has no site to attach a work area to.',
+        );
+      }
+
+      const code = await uniqueAreaCode(services, organizationId, site.id, body.code ?? body.name);
+
+      const area = await services.prisma.workArea.create({
+        data: {
+          organizationId,
+          siteId: site.id,
+          name: body.name,
+          code,
+          description: body.description ?? null,
+        },
+        select: { id: true, name: true, code: true, description: true, status: true },
+      });
+
+      return reply.status(201).send({ area: { ...area, positions: [] } });
+    });
+
+    /** Rename or archive a work area. */
+    app.patch('/areas/:areaId', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.POSITIONS_MANAGE);
+      const { areaId } = request.params as { areaId: string };
+      const body = updateWorkAreaSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+
+      // Tenant is in the read, and the read is what authorises the write. Another organization's
+      // area is not found rather than forbidden.
+      const existing = await services.prisma.workArea.findFirst({
+        where: { id: areaId, organizationId },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundError('work_area.not_found', 'Work area not found.');
+
+      if (body.status === 'ARCHIVED') {
+        // Archiving an area with live positions would hide the position a worker is standing on
+        // from every picker while they are still on it.
+        const active = await services.prisma.position.count({
+          where: { organizationId, workAreaId: areaId, status: 'ACTIVE' },
+        });
+        if (active > 0) {
+          throw new ConflictError(
+            'work_area.has_positions',
+            'Archive or move the positions in this area first.',
+          );
+        }
+      }
+
+      const area = await services.prisma.workArea.update({
+        where: { id: areaId },
+        data: {
+          ...(body.name === undefined ? {} : { name: body.name }),
+          ...(body.description === undefined ? {} : { description: body.description }),
+          ...(body.status === undefined ? {} : { status: body.status }),
+        },
+        select: { id: true, name: true, code: true, description: true, status: true },
+      });
+
+      return { area };
+    });
+
+    /** Create a position inside a work area. */
+    app.post('/positions', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.POSITIONS_MANAGE);
+      const body = createPositionSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+
+      // The area lookup carries the tenant, so the site id below is one this organization owns —
+      // which is what stops a caller planting a position in someone else's site by id.
+      const area = await services.prisma.workArea.findFirst({
+        where: { id: body.workAreaId, organizationId, status: 'ACTIVE' },
+        select: { id: true, siteId: true },
+      });
+      if (!area) throw new NotFoundError('work_area.not_found', 'Work area not found.');
+
+      const code = await uniquePositionCode(services, organizationId, body.code ?? body.name);
+
+      const position = await services.prisma.position.create({
+        data: {
+          organizationId,
+          siteId: area.siteId,
+          workAreaId: area.id,
+          name: body.name,
+          code,
+          kind: body.kind,
+          capacity: body.capacity ?? null,
+        },
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          kind: true,
+          capacity: true,
+          status: true,
+          workAreaId: true,
+        },
+      });
+
+      return reply.status(201).send({ position: { ...position, occupied: 0 } });
+    });
+
+    /** Rename, move, retype or archive a position. */
+    app.patch('/positions/:positionId', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.POSITIONS_MANAGE);
+      const { positionId } = request.params as { positionId: string };
+      const body = updatePositionSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+
+      const existing = await services.prisma.position.findFirst({
+        where: { id: positionId, organizationId },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundError('position.not_found', 'Position not found.');
+
+      if (body.workAreaId) {
+        const area = await services.prisma.workArea.findFirst({
+          where: { id: body.workAreaId, organizationId, status: 'ACTIVE' },
+          select: { id: true },
+        });
+        if (!area) throw new NotFoundError('work_area.not_found', 'Work area not found.');
+      }
+
+      if (body.status === 'ARCHIVED') {
+        // Someone is standing on it. Archiving now would remove the position from under a live
+        // session and leave a shift that cannot be closed against anything.
+        const open = await services.prisma.positionSession.count({
+          where: { organizationId, positionId, endedAt: null },
+        });
+        if (open > 0) {
+          throw new ConflictError(
+            'position.occupied',
+            'Somebody is working on this position right now.',
+          );
+        }
+      }
+
+      const position = await services.prisma.position.update({
+        where: { id: positionId },
+        data: {
+          ...(body.name === undefined ? {} : { name: body.name }),
+          ...(body.workAreaId === undefined ? {} : { workAreaId: body.workAreaId }),
+          ...(body.kind === undefined ? {} : { kind: body.kind }),
+          ...(body.capacity === undefined ? {} : { capacity: body.capacity }),
+          ...(body.status === undefined ? {} : { status: body.status }),
+        },
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          kind: true,
+          capacity: true,
+          status: true,
+          workAreaId: true,
+        },
+      });
+
+      return { position };
+    });
+
     /** White-label settings. */
     app.get('/branding', async (request) => {
       const actor = app.requireAuth(request);
@@ -358,6 +760,52 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       };
     });
   };
+}
+
+/**
+ * A code nobody in this organization is using yet.
+ *
+ * Derived from the name so the common case needs no input, then suffixed until it is free. The
+ * unique index is still the authority — this loop only keeps ordinary use from colliding with
+ * it, and a caller who loses a genuine race gets a 409 rather than a silently mangled code.
+ *
+ * Work-area codes are unique per (organization, site); position codes per organization. The two
+ * helpers differ only in that scope, and keeping them separate is what stops the wrong one being
+ * used against the wrong index.
+ */
+async function uniqueAreaCode(
+  services: AppServices,
+  organizationId: OrganizationId,
+  siteId: string,
+  source: string,
+): Promise<string> {
+  const base = deriveCode(source) || 'AREA';
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate = attempt === 0 ? base : `${base}${attempt + 1}`;
+    const taken = await services.prisma.workArea.findFirst({
+      where: { organizationId, siteId, code: candidate },
+      select: { id: true },
+    });
+    if (!taken) return candidate;
+  }
+  return `${base}${Date.now().toString(36).toUpperCase()}`;
+}
+
+async function uniquePositionCode(
+  services: AppServices,
+  organizationId: OrganizationId,
+  source: string,
+): Promise<string> {
+  const base = deriveCode(source) || 'POS';
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate = attempt === 0 ? base : `${base}${attempt + 1}`;
+    const taken = await services.prisma.position.findFirst({
+      where: { organizationId, code: candidate },
+      select: { id: true },
+    });
+    if (!taken) return candidate;
+  }
+  return `${base}${Date.now().toString(36).toUpperCase()}`;
 }
 
 /**

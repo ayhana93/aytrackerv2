@@ -110,18 +110,12 @@ export const createWorkerSchema = z.object({
     .optional(),
 });
 
-export const createPositionSchema = z.object({
-  siteId: uuidSchema,
-  workAreaId: uuidSchema,
-  name: z.string().trim().min(1).max(120),
-  code: codeSchema,
-  description: z.string().trim().max(1000).optional(),
-  changeMode: z
-    .enum(['INSTANT', 'QUALIFICATION_REQUIRED', 'SUPERVISOR_APPROVAL'])
-    .default('QUALIFICATION_REQUIRED'),
-  capacity: z.number().int().min(1).max(1000).nullable().default(null),
-  requiredQualificationIds: z.array(uuidSchema).max(20).default([]),
-});
+/*
+ * `createPositionSchema` used to live here as well, unused, requiring a `siteId` and a `code`
+ * the caller had to invent. The one the admin API actually parses is in `workforce.ts`, which
+ * derives both. Two schemas for one concept is the drift this package exists to prevent, so the
+ * one nothing imported was removed rather than kept "just in case".
+ */
 
 export type CreateOrganizationRequest = z.infer<typeof createOrganizationSchema>;
 export type UpdateBrandingRequest = z.infer<typeof updateBrandingSchema>;

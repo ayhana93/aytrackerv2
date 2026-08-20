@@ -7,6 +7,7 @@
 
 export * from './primitives.js';
 export * from './auth.js';
+export * from './workforce.js';
 export * from './shifts.js';
 export * from './drivers.js';
 export * from './fleet.js';
