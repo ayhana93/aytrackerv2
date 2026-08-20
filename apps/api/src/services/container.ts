@@ -23,6 +23,7 @@ import {
   TripCommandService,
 } from '@aytracker/module-drivers';
 import { AuthService } from './auth-service.js';
+import { RegistrationService } from './registration-service.js';
 import { SessionService } from './session-service.js';
 import { EntitlementService } from './entitlement-service.js';
 import { MarketService } from './market-service.js';
@@ -48,6 +49,7 @@ export interface AppServices {
   readonly events: EventBus;
 
   readonly auth: AuthService;
+  readonly registration: RegistrationService;
   readonly sessions: SessionService;
   readonly entitlements: EntitlementService;
   readonly markets: MarketService;
@@ -102,6 +104,7 @@ export function buildServices(config: AppConfig, clock: Clock = systemClock): Ap
     clock,
     events,
     auth: new AuthService(prisma),
+    registration: new RegistrationService(prisma),
     sessions: new SessionService(prisma),
     entitlements: new EntitlementService(prisma),
     markets: new MarketService(prisma, config.env.DEFAULT_MARKET),

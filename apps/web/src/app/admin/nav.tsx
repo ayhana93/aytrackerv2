@@ -1,17 +1,25 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
+import type { ReactNode } from 'react';
 import { NavItem, Sidebar, SidebarSection } from '@aytracker/ui';
 import { authApi } from '../../lib/auth';
+import { useSession } from './auth-guard';
+import {
+  IconDashboard,
+  IconFleet,
+  IconHistory,
+  IconPeople,
+  IconRoute,
+  IconSignOut,
+  IconZones,
+} from './icons';
 
 /**
  * Admin navigation.
  *
- * Scoped to what this deployment actually tracks: people and vehicles. No entry links anywhere
- * production, and none links to a page that does not exist or does not actually work — the
- * previous version pointed at `/admin/production`, `/admin/workforce`, `/admin/positions` and
- * `/admin/billing`, none of which had a route behind them, and at `/admin/settings`, which had a
- * page but no backend to save to, so it accepted a new brand colour and quietly discarded it.
+ * Scoped to what this deployment tracks: people and vehicles. No entry links anywhere near
+ * production, and none links to a page that does not exist or does not actually work.
  *
  * Deliberately without an open/close animation. This is used dozens of times a day, and the rule
  * from the design system is that frequency decides: a transition a supervisor sees fifty times
@@ -21,20 +29,26 @@ import { authApi } from '../../lib/auth';
 interface Entry {
   readonly href: string;
   readonly label: string;
-  readonly icon: string;
+  readonly icon: ReactNode;
 }
 
-const OVERVIEW: readonly Entry[] = [{ href: '/admin', label: 'Табло', icon: '▤' }];
+const OVERVIEW: readonly Entry[] = [{ href: '/admin', label: 'Табло', icon: IconDashboard }];
 
-const TRACKING: readonly Entry[] = [
-  { href: '/admin/people', label: 'Хора', icon: '☺' },
-  { href: '/admin/fleet', label: 'Автопарк', icon: '⛟' },
-  { href: '/admin/trips', label: 'Маршрути', icon: '⇄' },
+const PEOPLE: readonly Entry[] = [
+  { href: '/admin/people', label: 'На смяна', icon: IconPeople },
+  { href: '/admin/history', label: 'История', icon: IconHistory },
+  { href: '/admin/areas', label: 'Зони и позиции', icon: IconZones },
+];
+
+const FLEET: readonly Entry[] = [
+  { href: '/admin/fleet', label: 'Автопарк', icon: IconFleet },
+  { href: '/admin/trips', label: 'Маршрути', icon: IconRoute },
 ];
 
 export function AdminNav() {
   const pathname = usePathname();
   const router = useRouter();
+  const session = useSession();
 
   const group = (entries: readonly Entry[]) =>
     entries.map((entry) => (
@@ -60,11 +74,40 @@ export function AdminNav() {
       }
     >
       {group(OVERVIEW)}
-      <SidebarSection>Проследяване</SidebarSection>
-      {group(TRACKING)}
+      <SidebarSection>Хора</SidebarSection>
+      {group(PEOPLE)}
+      <SidebarSection>Автопарк</SidebarSection>
+      {group(FLEET)}
+
       <div style={{ flex: 1 }} />
+
+      {/*
+        The tenant key, where the person who needs it will actually look.
+        It is what a worker types on their own login screen, and without it here an admin has no
+        way to onboard anybody — the value would exist only in a database column.
+      */}
+      {session.organizationSlug ? (
+        <div
+          style={{
+            padding: 'var(--ay-space-3)',
+            marginBottom: 'var(--ay-space-2)',
+            borderTop: '1px solid var(--ay-nav-border)',
+          }}
+        >
+          <div className="ay-caption" style={{ color: 'var(--ay-nav-text)' }}>
+            Код за вход на работници
+          </div>
+          <div
+            className="ay-small ay-numeric"
+            style={{ color: 'var(--ay-nav-text-active)', fontWeight: 600, wordBreak: 'break-all' }}
+          >
+            {session.organizationSlug}
+          </div>
+        </div>
+      ) : null}
+
       <NavItem
-        icon="⏻"
+        icon={IconSignOut}
         label="Изход"
         onSelect={() => {
           void authApi.logout().finally(() => window.location.assign('/login'));

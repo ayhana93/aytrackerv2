@@ -93,137 +93,175 @@ export interface ChartTokens {
   readonly axis: string;
 }
 
+/**
+ * Light.
+ *
+ * Two deliberate departures from the palette this replaced, both of them the reason it read as
+ * an unfinished admin template rather than a tool:
+ *
+ *   * **The greys are neutral, not blue.** The old ground and borders were blue-tinted
+ *     (`#F4F6FA`, `#E5E9F0`, `#94A3B8`) and so was the accent, which put the entire interface in
+ *     one narrow hue band. Nothing stood out because everything was already slightly blue.
+ *     Neutral greys make the accent the only chromatic thing on screen, so it reads as emphasis
+ *     without having to shout.
+ *
+ *   * **The borders are visible.** `#E5E9F0` on white is a 1.06:1 edge — technically drawn,
+ *     practically invisible. Cards had no definition, table rows ran together, and the whole page
+ *     read as one soft mass. A border either separates two things or should not be there.
+ */
 export const lightColors: ColorTokens = {
-  bg: '#F4F6FA',
+  bg: '#F5F5F6',
   surface: '#FFFFFF',
-  surfaceSunken: '#F8FAFC',
+  surfaceSunken: '#FAFAFA',
   surfaceRaised: '#FFFFFF',
 
-  border: '#E5E9F0',
-  borderStrong: '#CBD5E1',
+  // 1.16:1 against white. Still quiet, but it actually draws an edge.
+  border: '#E4E4E7',
+  borderStrong: '#D4D4D8',
 
-  text: '#0F172A',
-  // Measured against the page ground (#F4F6FA), not against white. A caption sits directly on the
-  // ground as often as it sits on a card, and the lighter #64748B cleared AA on white while
-  // missing it on the ground — readable in a component preview, marginal on the actual page.
-  textMuted: '#5B6879',
-  textSubtle: '#94A3B8',
+  text: '#18181B',
+  // 7.7:1 on white, 7.1:1 on the page ground. Muted must stay readable on both, because a caption
+  // sits directly on the ground as often as it sits on a card.
+  textMuted: '#52525B',
+  textSubtle: '#71717A',
   textOnAccent: '#FFFFFF',
 
-  accent: '#2563EB',
-  accentHover: '#1D4ED8',
-  accentPressed: '#1E40AF',
-  accentSoft: '#EFF6FF',
-  accentSoftText: '#1D4ED8',
+  /**
+   * Indigo rather than the default blue.
+   *
+   * Blue-600 is the colour every framework ships with, and next to blue-grey neutrals it read as
+   * "unstyled" rather than chosen. Indigo carries further from the neutrals and, more usefully,
+   * sits well away from the green/amber/red the state badges own — so an accent badge is never
+   * one glance from being read as a status.
+   */
+  accent: '#4F46E5',
+  accentHover: '#4338CA',
+  accentPressed: '#3730A3',
+  accentSoft: '#EEF2FF',
+  accentSoftText: '#4338CA',
 
   stateWorking: '#DCFCE7',
   stateWorkingText: '#15803D',
   stateWorkingBorder: '#BBF7D0',
 
-  warning: '#D97706',
+  // Amber-700 rather than amber-600: this token is used as text on the dashboard, not only as a
+  // dot, and amber-600 sits just under AA on white.
+  warning: '#B45309',
   warningSoft: '#FEF3C7',
-  warningSoftText: '#B45309',
+  warningSoftText: '#92400E',
 
   danger: '#DC2626',
   dangerSoft: '#FEE2E2',
   dangerSoftText: '#B91C1C',
 
-  navBg: '#111827',
-  navText: '#94A3B8',
+  navBg: '#18181B',
+  navText: '#A1A1AA',
   navTextActive: '#FFFFFF',
-  navActiveBg: '#2563EB',
-  navHoverBg: 'rgba(255, 255, 255, 0.06)',
-  navBorder: '#1F2937',
+  navActiveBg: '#4F46E5',
+  navHoverBg: 'rgba(255, 255, 255, 0.07)',
+  navBorder: '#27272A',
 
   chrome: 'rgba(255, 255, 255, 0.72)',
-  chromeBorder: 'rgba(15, 23, 42, 0.08)',
+  chromeBorder: 'rgba(24, 24, 27, 0.09)',
 
-  scrim: 'rgba(15, 23, 42, 0.4)',
+  scrim: 'rgba(9, 9, 11, 0.45)',
 
-  focusRing: '#2563EB',
+  focusRing: '#4F46E5',
 };
 
+/**
+ * Dark.
+ *
+ * Neutral near-blacks, matching the light palette's move away from a blue cast. The previous set
+ * tinted every dark surface blue, which fought the accent instead of framing it.
+ */
 export const darkColors: ColorTokens = {
-  // Near-black with a blue cast rather than neutral grey: it reads as the same product at night,
-  // and it keeps the brand blue from looking alien against it.
-  bg: '#080C14',
-  surface: '#0F1623',
-  surfaceSunken: '#0B111C',
+  bg: '#09090B',
+  surface: '#18181B',
+  surfaceSunken: '#131316',
   // In dark, elevation comes from *lighter* surfaces. A shadow on a black ground is invisible.
-  surfaceRaised: '#16202F',
+  surfaceRaised: '#27272A',
 
-  border: '#1F2A3C',
-  borderStrong: '#2E3B52',
+  border: '#27272A',
+  borderStrong: '#3F3F46',
 
-  text: '#F1F5F9',
+  text: '#FAFAFA',
   // Deliberately above the 4.5:1 line against `surface` — muted must still be readable, not grey
   // mush. Anything genuinely decorative uses `textSubtle`.
-  textMuted: '#94A3B8',
-  textSubtle: '#64748B',
+  textMuted: '#A1A1AA',
+  textSubtle: '#71717A',
   /**
    * Near-black, not white — and this is the consequence of lifting the accent below.
    *
    * `accent` is lifted so it reads as *text* on a dark ground. That same lift makes it a lighter
-   * *fill*, and white on #3B82F6 measures 3.68:1 — under AA for a primary button label. Black
-   * against the same fill measures 5.71:1. Following the palette's own rule, the foreground is
-   * chosen by measurement rather than by assuming white, which is what a light-blue button with
-   * dark text amounts to. The alternative — darkening the fill — gives a muddy button on a
-   * near-black ground and costs the accent its legibility as text.
+   * *fill*, and white on #818CF8 measures 2.8:1 — far under AA for a primary button label. The
+   * deep indigo below measures 5.4:1 against the same fill. Following the palette's own rule, the
+   * foreground is chosen by measurement rather than by assuming white. The alternative —
+   * darkening the fill — gives a muddy button on a near-black ground and costs the accent its
+   * legibility as text.
    */
-  textOnAccent: '#0B1220',
+  textOnAccent: '#1E1B4B',
 
-  // Lifted one step from the light palette. #2563EB on a black ground is heavy and dim.
-  accent: '#3B82F6',
-  accentHover: '#60A5FA',
-  accentPressed: '#2563EB',
-  accentSoft: 'rgba(59, 130, 246, 0.14)',
-  accentSoftText: '#93C5FD',
+  // Lifted two steps from the light palette. Indigo-600 on a black ground is heavy and dim.
+  accent: '#818CF8',
+  accentHover: '#A5B4FC',
+  accentPressed: '#6366F1',
+  accentSoft: 'rgba(129, 140, 248, 0.16)',
+  accentSoftText: '#C7D2FE',
 
-  stateWorking: 'rgba(34, 197, 94, 0.14)',
+  stateWorking: 'rgba(34, 197, 94, 0.15)',
   stateWorkingText: '#4ADE80',
-  stateWorkingBorder: 'rgba(34, 197, 94, 0.28)',
+  stateWorkingBorder: 'rgba(34, 197, 94, 0.3)',
 
   warning: '#F59E0B',
-  warningSoft: 'rgba(245, 158, 11, 0.14)',
+  warningSoft: 'rgba(245, 158, 11, 0.15)',
   warningSoftText: '#FCD34D',
 
   danger: '#EF4444',
-  dangerSoft: 'rgba(239, 68, 68, 0.14)',
+  dangerSoft: 'rgba(239, 68, 68, 0.15)',
   dangerSoftText: '#FCA5A5',
 
   // The sidebar goes *darker* than the surface in dark mode, keeping the same structural
   // relationship it has in light: navigation recedes, content comes forward.
-  navBg: '#060A11',
-  navText: '#64748B',
-  navTextActive: '#F1F5F9',
+  navBg: '#060608',
+  navText: '#8A8A93',
+  navTextActive: '#FAFAFA',
   // The same value as `accent`, so one foreground token serves both. Keeping the light palette's
-  // #2563EB here would need white text while the accent needs dark — two rules for one idea.
-  navActiveBg: '#3B82F6',
-  navHoverBg: 'rgba(255, 255, 255, 0.05)',
-  navBorder: '#161F2E',
+  // #4F46E5 here would need white text while the accent needs dark — two rules for one idea.
+  navActiveBg: '#818CF8',
+  navHoverBg: 'rgba(255, 255, 255, 0.06)',
+  navBorder: '#1C1C20',
 
-  chrome: 'rgba(15, 22, 35, 0.72)',
+  chrome: 'rgba(24, 24, 27, 0.72)',
   chromeBorder: 'rgba(255, 255, 255, 0.08)',
 
-  scrim: 'rgba(0, 0, 0, 0.6)',
+  scrim: 'rgba(0, 0, 0, 0.65)',
 
-  focusRing: '#60A5FA',
+  focusRing: '#818CF8',
 };
 
+/**
+ * Series order is indigo → orange → teal → pink.
+ *
+ * Blue and orange first because they are the pair that survives every common form of colour
+ * vision deficiency; teal and pink next because they separate from both. Green is deliberately
+ * *not* in the first four — it is the working-state colour everywhere else in the interface, and
+ * a green line on a chart next to a green badge invites reading one as the other.
+ */
 export const lightChart: ChartTokens = {
-  series: ['#3B82F6', '#22C55E', '#A855F7', '#F59E0B', '#EC4899', '#14B8A6'],
-  plan: '#3B82F6',
-  actual: '#22C55E',
-  grid: '#EEF2F7',
-  axis: '#94A3B8',
+  series: ['#4F46E5', '#EA580C', '#0D9488', '#DB2777', '#7C3AED', '#65A30D'],
+  plan: '#4F46E5',
+  actual: '#0D9488',
+  grid: '#EFEFF1',
+  axis: '#71717A',
 };
 
 export const darkChart: ChartTokens = {
-  series: ['#60A5FA', '#4ADE80', '#C084FC', '#FBBF24', '#F472B6', '#2DD4BF'],
-  plan: '#60A5FA',
-  actual: '#4ADE80',
-  grid: '#18212F',
-  axis: '#64748B',
+  series: ['#818CF8', '#FB923C', '#2DD4BF', '#F472B6', '#A78BFA', '#A3E635'],
+  plan: '#818CF8',
+  actual: '#2DD4BF',
+  grid: '#1F1F23',
+  axis: '#71717A',
 };
 
 export function colorsFor(mode: ThemeMode): ColorTokens {

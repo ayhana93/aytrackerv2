@@ -112,6 +112,10 @@ export default function LoginPage() {
           <Button type="submit" block disabled={submitting}>
             {submitting ? 'Влизане…' : 'Вход'}
           </Button>
+
+          <p className="ay-caption ay-muted" style={{ textAlign: 'center' }}>
+            Нямате акаунт? <a href="/register">Създайте организация</a>
+          </p>
         </form>
       </Card>
     </main>

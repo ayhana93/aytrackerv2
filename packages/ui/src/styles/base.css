@@ -283,6 +283,28 @@ a {
   width: 100%;
 }
 
+/*
+ * A destructive action that repeats on every row.
+ *
+ * Quiet on purpose. At full button weight it out-shouted the thing it acts on — the row read as
+ * "Архивирайте" with a position name next to it, rather than a position with an action available.
+ * It keeps the full 44px hit area and only sheds visual weight, and it turns red on hover, so the
+ * consequence announces itself at the moment the pointer is over it rather than permanently.
+ */
+.ay-button-row-action {
+  padding: 0 var(--ay-space-3);
+  font-size: var(--ay-type-caption-size);
+  font-weight: 500;
+  color: var(--ay-text-subtle);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ay-button-row-action:hover:not(:disabled) {
+    background: var(--ay-danger-soft);
+    color: var(--ay-danger-soft-text);
+  }
+}
+
 .ay-button-large {
   min-height: var(--ay-touch-comfortable);
   font-size: 1rem;
@@ -689,10 +711,13 @@ a {
   color: var(--ay-text-on-accent);
 }
 
+/* A fixed box so every label starts at the same x, whatever the icon inside is. */
 .ay-nav-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 1.25rem;
-  text-align: center;
-  opacity: 0.9;
+  flex: none;
 }
 
 .ay-admin-main {
@@ -964,6 +989,9 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--ay-space-2);
+  /* A flex or grid item defaults to its content's min-width; without this a field refuses to
+     shrink below the width of the input inside it. */
+  min-width: 0;
 }
 
 .ay-label {
@@ -972,7 +1000,17 @@ a {
   color: var(--ay-text-muted);
 }
 
+/*
+ * `width: 100%` and `min-width: 0` are load-bearing, not tidying.
+ *
+ * A text input's intrinsic minimum width is roughly twenty characters, and a grid track sized
+ * `1fr` resolves to `minmax(auto, 1fr)` — so two side-by-side fields silently pushed themselves
+ * wider than their card and overflowed it. It looked like a broken layout and was actually the
+ * default sizing of an `<input>` doing exactly what it is specified to do.
+ */
 .ay-input {
+  width: 100%;
+  min-width: 0;
   min-height: var(--ay-touch-min);
   padding: 0 var(--ay-space-3);
   border: 1px solid var(--ay-border-strong);

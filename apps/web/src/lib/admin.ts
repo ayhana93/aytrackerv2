@@ -103,6 +103,65 @@ export interface TrackResponse {
   }[];
 }
 
+export type PositionKind = 'STANDARD' | 'DRIVING';
+export type RecordStatus = 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
+
+export interface PositionRow {
+  readonly id: string;
+  readonly name: string;
+  readonly code: string;
+  readonly kind: PositionKind;
+  readonly capacity: number | null;
+  readonly status: RecordStatus;
+  /** How many people are standing on it right now. */
+  readonly occupied: number;
+}
+
+export interface WorkAreaRow {
+  readonly id: string;
+  readonly name: string;
+  readonly code: string;
+  readonly description: string | null;
+  readonly status: RecordStatus;
+  readonly positions: readonly PositionRow[];
+}
+
+export interface HistoryRow {
+  readonly id: string;
+  readonly worker: string;
+  readonly workerId: string;
+  readonly employeeNumber: string;
+  readonly position: string;
+  readonly positionKind: PositionKind;
+  readonly workArea: string | null;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly seconds: number;
+  /** Still running: the duration is "so far", not a total. */
+  readonly isOpen: boolean;
+  readonly source: string;
+  readonly wasCorrected: boolean;
+}
+
+export interface HistoryResponse {
+  readonly range: { from: string; to: string };
+  readonly sessions: readonly HistoryRow[];
+  /**
+   * Totals per person, computed server-side over the whole range.
+   *
+   * Not derived from `sessions`: that list is capped, so summing it in the browser would under-
+   * report the moment an organization crosses the cap.
+   */
+  readonly byWorker: readonly {
+    workerId: string;
+    worker: string;
+    seconds: number;
+    sessions: number;
+    open: boolean;
+  }[];
+  readonly truncated: boolean;
+}
+
 export interface BrandingResponse {
   readonly companyName: string;
   readonly slug: string;
@@ -120,6 +179,30 @@ export const adminApi = {
     apiRequest<{ trips: TripRow[] }>('/admin/trips', { query }),
   track: (tripId: string) => apiRequest<TrackResponse>(`/admin/trips/${tripId}/track`),
   branding: () => apiRequest<BrandingResponse>('/admin/branding'),
+
+  areas: () => apiRequest<{ areas: WorkAreaRow[] }>('/admin/areas'),
+  createArea: (body: { name: string; description?: string }) =>
+    apiRequest<{ area: WorkAreaRow }>('/admin/areas', { method: 'POST', body }),
+  updateArea: (areaId: string, body: { name?: string; status?: 'ACTIVE' | 'ARCHIVED' }) =>
+    apiRequest<{ area: WorkAreaRow }>(`/admin/areas/${areaId}`, { method: 'PATCH', body }),
+
+  createPosition: (body: {
+    workAreaId: string;
+    name: string;
+    kind: PositionKind;
+    capacity?: number | null;
+  }) => apiRequest<{ position: PositionRow }>('/admin/positions', { method: 'POST', body }),
+  updatePosition: (
+    positionId: string,
+    body: { name?: string; kind?: PositionKind; status?: 'ACTIVE' | 'ARCHIVED' },
+  ) =>
+    apiRequest<{ position: PositionRow }>(`/admin/positions/${positionId}`, {
+      method: 'PATCH',
+      body,
+    }),
+
+  history: (query?: { from?: string; to?: string; workAreaId?: string; limit?: number }) =>
+    apiRequest<HistoryResponse>('/admin/history', { query }),
 };
 
 export type LoadState<T> =
