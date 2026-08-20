@@ -671,8 +671,15 @@ async function seedDemoOrganization(): Promise<void> {
     },
   });
 
-  // A completed shift from yesterday, with a real position-change history.
-  const yesterdayStart = new Date(Date.now() - 30 * 60 * 60 * 1000);
+  /**
+   * A completed shift with a real position-change history.
+   *
+   * Nine hours back rather than thirty, so it lands inside the dashboard's default
+   * last-24-hours window. Seeded a day earlier, every production figure on the dashboard read
+   * zero on a fresh install and the hourly chart was a flat line — a demo that looks like a
+   * broken product until someone thinks to change the date range.
+   */
+  const yesterdayStart = new Date(Date.now() - 9 * 60 * 60 * 1000);
   const shift = await prisma.shift.create({
     data: {
       organizationId: organization.id,
@@ -852,7 +859,14 @@ async function seedDemoOrganization(): Promise<void> {
 
   // A completed trip with a deliberate tracking gap, so the admin route view has a hole to
   // render and the "do not invent points across a gap" behaviour is demonstrable.
-  const tripStart = new Date(Date.now() - 26 * 3600 * 1000);
+  /**
+   * Within the dashboard's default window, not before it.
+   *
+   * At 26 hours ago the trip fell outside the last-24-hours range the dashboard opens on, so a
+   * freshly seeded demo showed zeros everywhere and looked broken. A demo that has to be
+   * date-picked before it shows anything is a demo nobody trusts.
+   */
+  const tripStart = new Date(Date.now() - 5 * 3600 * 1000);
   const tripEnd = new Date(tripStart.getTime() + 2.6 * 3600 * 1000);
   const trip = await prisma.driverTrip.create({
     data: {

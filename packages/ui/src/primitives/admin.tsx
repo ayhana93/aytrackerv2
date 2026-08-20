@@ -254,6 +254,15 @@ export function LineChart({ series, labels, height = 220, formatValue }: LineCha
   const max = niceCeiling(peak * 1.1);
   const columns = Math.max(1, labels.length - 1);
   const ticks = [1, 0.75, 0.5, 0.25, 0];
+  /**
+   * Enough precision that no two ticks print the same number.
+   *
+   * With a max of 1 the quarters are 1, 0.75, 0.5, 0.25, 0 — rounded to integers that reads
+   * "1, 1, 1, 0, 0", an axis that appears broken and cannot be used to read a value off the
+   * chart. The step decides the precision rather than a fixed choice, so a chart of thousands
+   * still shows whole numbers.
+   */
+  const tickDecimals = max / 4 >= 1 ? 0 : max / 4 >= 0.1 ? 1 : 2;
 
   const toX = (index: number): number => (index / columns) * 100;
   const toY = (value: number): number => 100 - (value / max) * 100;
@@ -280,7 +289,9 @@ export function LineChart({ series, labels, height = 220, formatValue }: LineCha
         >
           {ticks.map((fraction) => (
             <span key={fraction} style={{ transform: 'translateY(-0.4em)' }}>
-              {Math.round(max * fraction).toLocaleString('bg-BG')}
+              {(max * fraction).toLocaleString('bg-BG', {
+                maximumFractionDigits: tickDecimals,
+              })}
             </span>
           ))}
         </div>
@@ -348,8 +359,13 @@ export function LineChart({ series, labels, height = 220, formatValue }: LineCha
               fontSize: '0.6875rem',
             }}
           >
-            {labels.map((label) => (
-              <span key={label}>{label}</span>
+            {/*
+              Keyed by position, not by text. Labels repeat legitimately — an hourly axis
+              spanning more than a day shows "13 ч." twice — and a duplicate React key silently
+              drops one, so the axis loses a tick and stops lining up with the line above it.
+            */}
+            {labels.map((label, index) => (
+              <span key={index}>{label}</span>
             ))}
           </div>
         </div>

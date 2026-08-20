@@ -27,7 +27,6 @@ const OPERATIONS: readonly Entry[] = [
 const FLEET: readonly Entry[] = [
   { href: '/admin/fleet', label: 'Автопарк', icon: '⛟' },
   { href: '/admin/trips', label: 'Маршрути', icon: '⇄' },
-  { href: '/admin/costs', label: 'Разходи', icon: '◈' },
 ];
 
 const SETTINGS: readonly Entry[] = [

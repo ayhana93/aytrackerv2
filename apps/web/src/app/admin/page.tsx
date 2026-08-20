@@ -14,172 +14,169 @@ import {
   ThemeToggle,
   type Column,
 } from '@aytracker/ui';
+import { adminApi, describeError, useApi, type DashboardResponse } from '../../lib/admin';
 
 /**
  * Admin dashboard.
  *
- * The screen a plant manager leaves open on a second monitor, so it is ordered by what they are
- * checking for rather than by what is easiest to render: the four numbers first, then the shape
- * of the shift, then the two lists that mean somebody has to do something.
+ * Every number here comes from `/admin/dashboard` in one request. Nothing on this page adds,
+ * averages or converts — the browser renders what the server computed, because a total a client
+ * can compute is a total a client can change, and these feed cost reports and, in some
+ * organizations, pay.
  *
- * Every figure shown here comes from the server. The client renders; it never totals. See
- * docs/api.md — a production total computed in the browser is a production total a browser can
- * change.
+ * Ordered by what a plant manager is checking for: the four numbers, then the shape of the
+ * shift, then the two lists that mean somebody has to do something.
  */
 
-const HOURS = ['06', '07', '08', '09', '10', '11', '12', '13', '14'];
-
-const PRODUCTION = {
-  plan: [120, 120, 120, 120, 120, 60, 120, 120, 120],
-  actual: [112, 128, 131, 124, 118, 54, 126, 133, 96],
-};
-
-interface Line {
-  readonly id: string;
-  readonly name: string;
-  readonly produced: number;
-  readonly target: number;
-}
-
-const LINES: readonly Line[] = [
-  { id: 'ext', name: 'Екструзия', produced: 612, target: 640 },
-  { id: 'pack', name: 'Опаковка', produced: 448, target: 400 },
-  { id: 'paint', name: 'Боядисване', produced: 162, target: 240 },
-];
-
-interface ActivePosition {
-  readonly id: string;
-  readonly worker: string;
-  readonly position: string;
-  readonly since: string;
-  readonly duration: string;
-  readonly state: 'WORKING' | 'BREAK' | 'DRIVING';
-}
-
-const ACTIVE: readonly ActivePosition[] = [
-  {
-    id: '1',
-    worker: 'Иван Петров',
-    position: 'Шофьор · CA 1234 AB',
-    since: '07:15',
-    duration: '02:35',
-    state: 'DRIVING',
-  },
-  {
-    id: '2',
-    worker: 'Мария Димитрова',
-    position: 'Опаковка',
-    since: '06:02',
-    duration: '03:48',
-    state: 'WORKING',
-  },
-  {
-    id: '3',
-    worker: 'Георги Стоянов',
-    position: 'Машина 2',
-    since: '09:30',
-    duration: '00:20',
-    state: 'BREAK',
-  },
-];
-
-interface Warning {
-  readonly id: string;
-  readonly text: string;
-  readonly detail: string;
-  readonly tone: 'warning' | 'danger';
-}
-
-const WARNINGS: readonly Warning[] = [
-  {
-    id: 'w1',
-    text: 'Прекъснато проследяване',
-    detail: 'CA 1234 AB · 19 мин без данни · 09:12–09:31',
-    tone: 'warning',
-  },
-  {
-    id: 'w2',
-    text: 'Изтичаща квалификация',
-    detail: 'Боядисване · Мария Димитрова · след 12 дни',
-    tone: 'warning',
-  },
-  {
-    id: 'w3',
-    text: 'Смяна над 10 часа',
-    detail: 'Георги Стоянов · започната в 05:45',
-    tone: 'danger',
-  },
-];
-
-const STATE_LABEL: Readonly<Record<ActivePosition['state'], string>> = {
-  WORKING: 'Работи',
-  BREAK: 'Почивка',
-  DRIVING: 'На път',
-};
-
-const STATE_TONE: Readonly<Record<ActivePosition['state'], 'success' | 'warning' | 'accent'>> = {
-  WORKING: 'success',
-  BREAK: 'warning',
-  DRIVING: 'accent',
-};
+type ActivePosition = DashboardResponse['activePositions'][number];
 
 const ACTIVE_COLUMNS: readonly Column<ActivePosition>[] = [
   { key: 'worker', header: 'Работник', render: (row) => row.worker },
-  { key: 'position', header: 'Позиция', render: (row) => row.position },
-  { key: 'since', header: 'От', numeric: true, render: (row) => row.since },
-  { key: 'duration', header: 'Времетраене', numeric: true, render: (row) => row.duration },
+  {
+    key: 'position',
+    header: 'Позиция',
+    render: (row) => (
+      <span style={{ display: 'inline-flex', gap: 'var(--ay-space-2)', alignItems: 'center' }}>
+        {row.position}
+        {row.kind === 'DRIVING' ? <Badge tone="accent">МПС</Badge> : null}
+      </span>
+    ),
+  },
+  {
+    key: 'since',
+    header: 'От',
+    numeric: true,
+    render: (row) =>
+      new Date(row.startedAt).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' }),
+  },
   {
     key: 'state',
     header: 'Състояние',
-    render: (row) => <Badge tone={STATE_TONE[row.state]}>{STATE_LABEL[row.state]}</Badge>,
+    render: (row) =>
+      row.onBreak ? (
+        <Badge tone="warning">Почивка</Badge>
+      ) : row.kind === 'DRIVING' ? (
+        <Badge tone="accent">На път</Badge>
+      ) : (
+        <Badge tone="success">Работи</Badge>
+      ),
   },
 ];
 
+/**
+ * Warning text is built here, from a code the server sent.
+ *
+ * The server sends `kind`, `subject` and a machine-readable `detail`; the wording is the client's
+ * job because it is language, not data. Every string below describes what was observed —
+ * "приложението не изпраща данни", never "шофьорът е изключил проследяването". See
+ * docs/tracking.md § anti-tampering.
+ */
+function warningText(warning: DashboardResponse['warnings'][number]): {
+  title: string;
+  detail: string;
+} {
+  switch (warning.kind) {
+    case 'LONG_SHIFT':
+      return {
+        title: 'Смяна над 10 часа',
+        detail: warning.detail
+          ? `${warning.subject} · започната в ${new Date(warning.detail).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' })}`
+          : warning.subject,
+      };
+    case 'TRACKING_INTERRUPTED':
+      return {
+        title: 'Прекъснато проследяване',
+        detail: warning.detail
+          ? `${warning.subject} · последни данни в ${new Date(warning.detail).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' })}`
+          : `${warning.subject} · няма получени данни`,
+      };
+    case 'DOCUMENT_EXPIRING': {
+      const [, days] = warning.detail.split(':');
+      const remaining = Number(days ?? 0);
+      return {
+        title: 'Изтичащ документ',
+        detail:
+          remaining < 0
+            ? `${warning.subject} · просрочен с ${Math.abs(remaining)} дни`
+            : `${warning.subject} · след ${remaining} дни`,
+      };
+    }
+    default:
+      return { title: warning.kind, detail: warning.subject };
+  }
+}
+
+function hourLabel(iso: string): string {
+  return new Date(iso).toLocaleTimeString('bg-BG', { hour: '2-digit' });
+}
+
 export default function AdminDashboardPage() {
-  const maxLine = Math.max(...LINES.map((line) => line.target));
-  const producedToday = PRODUCTION.actual.reduce((total, value) => total + value, 0);
+  const state = useApi(() => adminApi.dashboard(), []);
+
+  if (state.status === 'error') {
+    return (
+      <>
+        <AdminHeader title="Табло" />
+        <AdminBody>
+          <Card>
+            <p className="ay-small">{describeError(state.error)}</p>
+          </Card>
+        </AdminBody>
+      </>
+    );
+  }
+
+  const data = state.status === 'ready' ? state.data : null;
+  const loading = state.status === 'loading';
+
+  // Only every third hour is labelled. Twenty-four labels on a phone-width chart overlap into an
+  // unreadable smear, and the shape is what the chart is for.
+  const hourly = data?.hourly ?? [];
+  const labels = hourly.map((bucket, index) =>
+    index % 3 === 0 ? hourLabel(bucket.hour) : ' '.repeat(index),
+  );
+  const maxArea = Math.max(1, ...(data?.byWorkArea ?? []).map((area) => area.produced));
 
   return (
     <>
       <AdminHeader
         title="Табло"
-        subtitle="Дневна смяна · Завод 1 · 19 август"
+        subtitle={
+          data
+            ? `${new Date(data.range.from).toLocaleString('bg-BG', { day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit' })} → сега`
+            : 'Зареждане…'
+        }
         actions={<ThemeToggle labels={{ light: 'Светла', dark: 'Тъмна', system: 'Системна' }} />}
       />
 
       <AdminBody>
         <Grid>
           <Kpi
-            label="Произведено днес"
-            value={producedToday.toLocaleString('bg-BG')}
+            label="Произведено"
+            value={loading ? '—' : (data?.totals.producedGood ?? 0).toLocaleString('bg-BG')}
             unit="бр."
-            delta={4.2}
-            goodDirection="up"
-            caption="спрямо вчера по същото време"
+            caption={data ? `брак ${data.totals.producedScrap.toLocaleString('bg-BG')}` : undefined}
           />
           <Kpi
-            label="Активни работници"
-            value="24"
-            delta={0}
-            goodDirection="up"
-            caption="от 31 на смяна"
+            label="Активни позиции"
+            value={loading ? '—' : String(data?.totals.activeWorkers ?? 0)}
+            caption="в момента"
           />
           <Kpi
-            label="Изпълнение на плана"
-            value="97.4"
-            unit="%"
-            delta={-2.1}
-            goodDirection="up"
-            caption="спад в 11:00 — планирана почивка"
+            label="Курсове"
+            value={loading ? '—' : String(data?.totals.trips ?? 0)}
+            caption={
+              data
+                ? `${(data.totals.distanceMeters / 1000).toLocaleString('bg-BG', { maximumFractionDigits: 0 })} км`
+                : undefined
+            }
           />
-          {/* Fuel is a cost: a rise is bad news, and the colour has to say so. */}
           <Kpi
-            label="Разход за гориво"
-            value="184.20"
-            unit="лв."
-            delta={7.8}
+            label="Време без данни"
+            value={loading ? '—' : `${Math.round((data?.totals.untrackedSeconds ?? 0) / 60)}`}
+            unit="мин"
             goodDirection="down"
-            caption="4 маршрута · 612 км"
+            caption="не се брои за разстояние"
           />
         </Grid>
 
@@ -187,33 +184,40 @@ export default function AdminDashboardPage() {
           <CardHeader>
             <div>
               <h2 className="ay-h3">Производство по часове</h2>
-              <p className="ay-caption ay-muted">План срещу реално, текуща смяна</p>
+              <p className="ay-caption ay-muted">Годна продукция срещу брак</p>
             </div>
-            <Badge tone="neutral">06:00 – 14:00</Badge>
           </CardHeader>
           <div style={{ padding: 'var(--ay-space-5)' }}>
-            <LineChart
-              labels={HOURS}
-              formatValue={(value) => `${value.toLocaleString('bg-BG')} бр.`}
-              series={[
-                // Only the actual is filled. The plan is the reference the eye measures against,
-                // so it stays a bare line.
-                { label: 'План', color: 'var(--ay-chart-plan)', points: PRODUCTION.plan },
-                {
-                  label: 'Реално',
-                  color: 'var(--ay-chart-actual)',
-                  points: PRODUCTION.actual,
-                  area: true,
-                },
-              ]}
-            />
+            {hourly.length > 0 ? (
+              <LineChart
+                labels={labels}
+                formatValue={(value) => `${value.toLocaleString('bg-BG')} бр.`}
+                series={[
+                  {
+                    label: 'Годни',
+                    color: 'var(--ay-chart-actual)',
+                    points: hourly.map((bucket) => bucket.good),
+                    area: true,
+                  },
+                  {
+                    label: 'Брак',
+                    color: 'var(--ay-chart-4)',
+                    points: hourly.map((bucket) => bucket.scrap),
+                  },
+                ]}
+              />
+            ) : (
+              <p className="ay-small ay-muted">
+                {loading ? 'Зареждане…' : 'Няма записано производство в този период.'}
+              </p>
+            )}
           </div>
         </Card>
 
         <Grid wide>
           <Card padded={false}>
             <CardHeader>
-              <h2 className="ay-h3">Производство по линии</h2>
+              <h2 className="ay-h3">Производство по зони</h2>
             </CardHeader>
             <div
               style={{
@@ -223,61 +227,73 @@ export default function AdminDashboardPage() {
                 gap: 'var(--ay-space-4)',
               }}
             >
-              {LINES.map((line, index) => (
+              {(data?.byWorkArea ?? []).map((area, index) => (
                 <BarRow
-                  key={line.id}
-                  label={line.name}
-                  value={line.produced}
-                  max={maxLine}
-                  color={`var(--ay-chart-${index + 1})`}
-                  display={`${line.produced} / ${line.target}`}
+                  key={area.name}
+                  label={area.name}
+                  value={area.produced}
+                  max={maxArea}
+                  color={`var(--ay-chart-${(index % 6) + 1})`}
+                  display={area.produced.toLocaleString('bg-BG')}
                 />
               ))}
+              {data && data.byWorkArea.length === 0 ? (
+                <p className="ay-small ay-muted">Няма данни.</p>
+              ) : null}
             </div>
           </Card>
 
           <Card padded={false}>
             <CardHeader>
               <h2 className="ay-h3">Изисква внимание</h2>
-              <Badge tone="warning">{WARNINGS.length}</Badge>
+              {data ? (
+                <Badge tone={data.warnings.length > 0 ? 'warning' : 'success'}>
+                  {data.warnings.length}
+                </Badge>
+              ) : null}
             </CardHeader>
             <ul>
-              {WARNINGS.map((warning) => (
-                <li
-                  key={warning.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 'var(--ay-space-3)',
-                    padding: 'var(--ay-space-4) var(--ay-space-5)',
-                    borderTop: '1px solid var(--ay-border)',
-                  }}
-                >
-                  <span
-                    aria-hidden="true"
+              {(data?.warnings ?? []).map((warning) => {
+                const text = warningText(warning);
+                return (
+                  <li
+                    key={warning.id}
                     style={{
-                      marginTop: '0.35rem',
-                      width: '0.5rem',
-                      height: '0.5rem',
-                      borderRadius: '50%',
-                      flex: 'none',
-                      background:
-                        warning.tone === 'danger' ? 'var(--ay-danger)' : 'var(--ay-warning)',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 'var(--ay-space-3)',
+                      padding: 'var(--ay-space-4) var(--ay-space-5)',
+                      borderTop: '1px solid var(--ay-border)',
                     }}
-                  />
-                  <div>
-                    <p className="ay-small" style={{ fontWeight: 550 }}>
-                      {warning.text}
-                    </p>
-                    {/*
-                      Neutral wording, always. "Прекъснато проследяване" describes what the server
-                      observed; it never asserts that a driver turned anything off. See
-                      docs/tracking.md § anti-tampering.
-                    */}
-                    <p className="ay-caption ay-muted">{warning.detail}</p>
-                  </div>
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        marginTop: '0.35rem',
+                        width: '0.5rem',
+                        height: '0.5rem',
+                        borderRadius: '50%',
+                        flex: 'none',
+                        background:
+                          warning.severity === 'CRITICAL'
+                            ? 'var(--ay-danger)'
+                            : 'var(--ay-warning)',
+                      }}
+                    />
+                    <div>
+                      <p className="ay-small" style={{ fontWeight: 550 }}>
+                        {text.title}
+                      </p>
+                      <p className="ay-caption ay-muted">{text.detail}</p>
+                    </div>
+                  </li>
+                );
+              })}
+              {data && data.warnings.length === 0 ? (
+                <li style={{ padding: 'var(--ay-space-5)' }}>
+                  <p className="ay-small ay-muted">Нищо не изисква внимание.</p>
                 </li>
-              ))}
+              ) : null}
             </ul>
           </Card>
         </Grid>
@@ -285,9 +301,14 @@ export default function AdminDashboardPage() {
         <Card padded={false}>
           <CardHeader>
             <h2 className="ay-h3">Активни позиции</h2>
-            <Badge tone="success">{ACTIVE.length} в момента</Badge>
+            {data ? <Badge tone="success">{data.activePositions.length}</Badge> : null}
           </CardHeader>
-          <DataTable columns={ACTIVE_COLUMNS} rows={ACTIVE} rowKey={(row) => row.id} />
+          <DataTable
+            columns={ACTIVE_COLUMNS}
+            rows={data?.activePositions ?? []}
+            rowKey={(row) => row.id}
+            empty={loading ? 'Зареждане…' : 'Никой не е на смяна в момента.'}
+          />
         </Card>
       </AdminBody>
     </>
