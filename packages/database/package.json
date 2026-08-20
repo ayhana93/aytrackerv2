@@ -33,6 +33,7 @@
     "@aytracker/auth": "workspace:*",
     "@aytracker/billing": "workspace:*",
     "@aytracker/config": "workspace:*",
+    "@aytracker/tracking": "workspace:*",
     "prisma": "^6.3.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"

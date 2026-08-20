@@ -436,6 +436,9 @@ importers:
       '@aytracker/config':
         specifier: workspace:*
         version: link:../config
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../tracking
       prisma:
         specifier: ^6.3.0
         version: 6.19.3(magicast@0.3.5)(typescript@5.9.3)

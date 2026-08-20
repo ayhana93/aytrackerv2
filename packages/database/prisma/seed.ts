@@ -16,6 +16,7 @@
 import { findWorkspaceRoot, loadRootEnvFiles } from '@aytracker/config';
 import { SYSTEM_ROLE_DEFINITIONS, hashPassword, hashPin } from '@aytracker/auth';
 import { FEATURE_DEFINITIONS, PLAN_DEFINITIONS } from '@aytracker/billing';
+import { computeTrackDistance } from '@aytracker/tracking';
 
 // Before PrismaClient is constructed, and before the import that constructs it. This script is
 // run directly (`tsx prisma/seed.ts`), so it never passes through prisma.config.ts and would
@@ -274,6 +275,85 @@ async function seedSystemRoles(): Promise<void> {
     }
   }
   console.log(`  system roles: ${SYSTEM_ROLE_DEFINITIONS.length}`);
+}
+
+/**
+ * A demo GPS track along the Sofia–Plovdiv corridor.
+ *
+ * Sampled every 30 seconds, which is what the real sampling policy produces on a motorway. The
+ * previous version put eight points twenty minutes apart, and the consequence was instructive:
+ * every single segment exceeded the five-minute bridging limit, so `computeTrackDistance` refused
+ * to join any of them and the "route" rendered as eight unconnected dots. The data was wrong, not
+ * the rule — and the tempting fix would have been to relax the rule, which is exactly the change
+ * that would let GPS noise invent kilometres in production.
+ *
+ * One deliberate nineteen-minute silence sits in the middle, matching the tracking events seeded
+ * beside it. That is the whole point of the demo: a continuous line with one honest break in it,
+ * so the admin route view has something real to draw and the gap is visible rather than papered
+ * over with a straight line.
+ */
+function buildDemoTrack(
+  organizationId: string,
+  tripId: string,
+  startedAt: Date,
+  endedAt: Date,
+): {
+  organizationId: string;
+  tripId: string;
+  timestamp: Date;
+  latitude: string;
+  longitude: string;
+  accuracyMeters: string;
+  speedMps: string;
+  source: string;
+}[] {
+  // Waypoints along the A1. Interpolated between, not used directly.
+  const corridor: readonly (readonly [number, number])[] = [
+    [42.6977, 23.3219],
+    [42.652, 23.438],
+    [42.59, 23.61],
+    [42.51, 23.83],
+    [42.43, 24.01],
+    [42.32, 24.26],
+    [42.24, 24.47],
+    [42.1354, 24.7453],
+  ];
+
+  const intervalSeconds = 30;
+  const totalSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
+  const gapStart = 3600;
+  const gapEnd = gapStart + 1140;
+
+  const points = [];
+  for (let elapsed = 0; elapsed <= totalSeconds; elapsed += intervalSeconds) {
+    // The silence. Points are simply absent — which is what a phone in a dead zone produces,
+    // and what the gap detector is written to notice.
+    if (elapsed > gapStart && elapsed < gapEnd) continue;
+
+    const progress = elapsed / totalSeconds;
+    const scaled = progress * (corridor.length - 1);
+    const index = Math.min(corridor.length - 2, Math.floor(scaled));
+    const withinSegment = scaled - index;
+
+    const from = corridor[index]!;
+    const to = corridor[index + 1]!;
+    // A few metres of wander so the line reads as a driven road rather than a ruler. Well under
+    // the 10 m minimum segment length, so it never adds distance of its own.
+    const jitter = Math.sin(elapsed / 97) * 0.00004;
+
+    points.push({
+      organizationId,
+      tripId,
+      timestamp: new Date(startedAt.getTime() + elapsed * 1000),
+      latitude: (from[0] + (to[0] - from[0]) * withinSegment + jitter).toFixed(6),
+      longitude: (from[1] + (to[1] - from[1]) * withinSegment + jitter).toFixed(6),
+      accuracyMeters: '12.50',
+      speedMps: '24.500',
+      source: 'GPS',
+    });
+  }
+
+  return points;
 }
 
 async function seedDemoOrganization(): Promise<void> {
@@ -831,27 +911,31 @@ async function seedDemoOrganization(): Promise<void> {
     ],
   });
 
-  // A sparse but plausible track along the Sofia–Plovdiv corridor.
-  const trackPoints = [
-    [42.6977, 23.3219],
-    [42.652, 23.438],
-    [42.59, 23.61],
-    [42.51, 23.83],
-    [42.43, 24.01],
-    [42.32, 24.26],
-    [42.24, 24.47],
-    [42.1354, 24.7453],
-  ];
-  await prisma.tripLocationPoint.createMany({
-    data: trackPoints.map((point, index) => ({
-      organizationId: organization.id,
-      tripId: trip.id,
-      timestamp: new Date(tripStart.getTime() + index * 1200 * 1000),
-      latitude: point[0]!.toFixed(6),
-      longitude: point[1]!.toFixed(6),
-      accuracyMeters: '12.5',
-      source: 'GPS',
+  const track = buildDemoTrack(organization.id, trip.id, tripStart, tripEnd);
+  await prisma.tripLocationPoint.createMany({ data: track });
+
+  /**
+   * The summary is derived from the track, never typed in beside it.
+   *
+   * A hardcoded 148 km next to a track that measures something else is the exact inconsistency
+   * this product exists to avoid, and a demo that ships it teaches everyone who reads the seed
+   * that the two are allowed to disagree. The server recomputes on every batch; so does this.
+   */
+  const measured = computeTrackDistance(
+    track.map((point) => ({
+      timestamp: point.timestamp,
+      latitude: Number(point.latitude),
+      longitude: Number(point.longitude),
+      accuracyMeters: Number(point.accuracyMeters),
     })),
+  );
+  await prisma.driverTrip.update({
+    where: { id: trip.id },
+    data: {
+      distanceMeters: measured.distanceMeters,
+      untrackedSeconds: measured.gapSeconds,
+      endOdometer: (148_172 + measured.distanceMeters / 1000).toFixed(2),
+    },
   });
 
   const fuelExpense = await prisma.fuelExpense.create({
