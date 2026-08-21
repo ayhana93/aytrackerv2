@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { PERMISSIONS, assertPermission } from '@aytracker/auth';
+import { PERMISSIONS, assertPermission, hashPin } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
 import { ConflictError, NotFoundError, ValidationError } from '@aytracker/domain';
 import {
@@ -13,8 +13,10 @@ import {
   createPositionSchema,
   createVehicleSchema,
   createWorkAreaSchema,
+  createWorkerSchema,
   updatePositionSchema,
   updateWorkAreaSchema,
+  updateWorkerSchema,
 } from '@aytracker/validation';
 import { deriveCode } from '../lib/slug.js';
 import type { AppServices } from '../services/container.js';
@@ -273,6 +275,247 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         byWorker: [...totals.values()].sort((a, b) => b.seconds - a.seconds),
         /** True when the list was capped, so the screen can say so rather than imply completeness. */
         truncated: sessions.length < allForTotals.length,
+      };
+    });
+
+    /* ---------------------------------------------------------------- workers */
+
+    /**
+     * The roster: everyone who can clock in, and whether they actually can.
+     *
+     * `hasPin` rather than any part of the PIN itself. The hash never leaves the database, and a
+     * screen that only needs to answer "can this person sign in yet" gets a boolean. `lockedUntil`
+     * is here for the same reason it is on the model: a worker standing at a terminal saying "it
+     * won't take my PIN" is answered by this column, not by a support call.
+     */
+    app.get('/workers', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKERS_READ);
+      const now = services.clock.now();
+
+      const workers = await services.prisma.worker.findMany({
+        where: { organizationId: actor.organizationId, deletedAt: null },
+        select: {
+          id: true,
+          employeeNumber: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          status: true,
+          pinHash: true,
+          lockedUntil: true,
+          createdAt: true,
+          drivers: {
+            where: { deletedAt: null },
+            select: { id: true, driverCode: true, status: true },
+            take: 1,
+          },
+        },
+        orderBy: [{ status: 'asc' }, { employeeNumber: 'asc' }],
+      });
+
+      return {
+        workers: workers.map((worker) => {
+          const driver = worker.drivers[0];
+          return {
+            id: worker.id,
+            employeeNumber: worker.employeeNumber,
+            firstName: worker.firstName,
+            lastName: worker.lastName,
+            email: worker.email,
+            phone: worker.phone,
+            status: worker.status,
+            /** Whether a PIN exists — never the PIN, never the hash. */
+            hasPin: worker.pinHash !== null,
+            /** Locked out by failed attempts, and until when. Null once the lock has expired. */
+            lockedUntil:
+              worker.lockedUntil && worker.lockedUntil > now
+                ? worker.lockedUntil.toISOString()
+                : null,
+            createdAt: worker.createdAt.toISOString(),
+            driver: driver
+              ? { id: driver.id, code: driver.driverCode, status: driver.status }
+              : null,
+          };
+        }),
+      };
+    });
+
+    /**
+     * Add someone to the roster.
+     *
+     * The employee number and the PIN are both chosen here, by an admin, and handed to the person
+     * — there is no self-registration for a worker and there should not be: the whole point of a
+     * tenant is that its staff list is decided by the organization, not by whoever finds the URL.
+     *
+     * The PIN is hashed with Argon2id before the transaction opens, exactly as registration hashes
+     * a password, and is never stored, logged or returned. An admin who forgets it sets a new one;
+     * there is no way to read the old one back, which is the property that makes it a credential.
+     */
+    app.post('/workers', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKERS_CREATE);
+      const body = createWorkerSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+      const now = services.clock.now();
+
+      const duplicate = await services.prisma.worker.findFirst({
+        where: { organizationId, employeeNumber: body.employeeNumber },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw new ConflictError(
+          'worker.employee_number_taken',
+          'A worker with this employee number already exists.',
+        );
+      }
+
+      const driverCode = body.isDriver ? (body.driverCode ?? body.employeeNumber) : null;
+      if (driverCode) {
+        const takenCode = await services.prisma.driver.findFirst({
+          where: { organizationId, driverCode },
+          select: { id: true },
+        });
+        if (takenCode) {
+          throw new ConflictError('driver.code_taken', 'A driver with this code already exists.');
+        }
+      }
+
+      // Hashed outside the transaction: Argon2id is deliberately slow, and holding a write
+      // transaction open for the duration of a KDF is how a connection pool gets exhausted by
+      // somebody entering a roster.
+      const pinHash = body.pin ? await hashPin(body.pin) : null;
+
+      const site = await services.prisma.site.findFirst({
+        where: { organizationId, status: 'ACTIVE' },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const worker = await services.prisma.$transaction(async (tx) => {
+        const created = await tx.worker.create({
+          data: {
+            organizationId,
+            siteId: site?.id ?? null,
+            employeeNumber: body.employeeNumber,
+            firstName: body.firstName,
+            lastName: body.lastName,
+            email: body.email ?? null,
+            phone: body.phone ?? null,
+            pinHash,
+            pinSetAt: pinHash ? now : null,
+          },
+          select: { id: true, employeeNumber: true, firstName: true, lastName: true, status: true },
+        });
+
+        if (driverCode) {
+          await tx.driver.create({
+            data: {
+              organizationId,
+              workerId: created.id,
+              driverCode,
+              firstName: body.firstName,
+              lastName: body.lastName,
+              // The same credential opens both doors. One person, one PIN to remember — two would
+              // be two things to forget, and the second one gets written on the dashboard.
+              pinHash,
+              pinSetAt: pinHash ? now : null,
+            },
+          });
+        }
+
+        return created;
+      });
+
+      return reply.status(201).send({
+        worker: {
+          id: worker.id,
+          employeeNumber: worker.employeeNumber,
+          firstName: worker.firstName,
+          lastName: worker.lastName,
+          status: worker.status,
+          hasPin: pinHash !== null,
+          lockedUntil: null,
+          driver: driverCode ? { code: driverCode } : null,
+        },
+      });
+    });
+
+    /**
+     * Change a worker: a new PIN, a correction to a name, or deactivation.
+     *
+     * Setting a PIN also clears the failed-attempt counter and the lockout. That is not a
+     * convenience — it is the whole reason an admin resets a PIN. Leaving someone locked out with
+     * a PIN they have just been given would make the reset look broken.
+     */
+    app.patch('/workers/:workerId', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKERS_UPDATE);
+      const { workerId } = request.params as { workerId: string };
+      const body = updateWorkerSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+      const now = services.clock.now();
+
+      // The tenant is in the read, and the read is what authorises the write. Another
+      // organization's worker is not found rather than forbidden.
+      const existing = await services.prisma.worker.findFirst({
+        where: { id: workerId, organizationId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundError('worker.not_found', 'Worker not found.');
+
+      const pinHash = body.pin ? await hashPin(body.pin) : undefined;
+
+      const worker = await services.prisma.$transaction(async (tx) => {
+        const updated = await tx.worker.update({
+          where: { id: workerId },
+          data: {
+            ...(body.firstName === undefined ? {} : { firstName: body.firstName }),
+            ...(body.lastName === undefined ? {} : { lastName: body.lastName }),
+            ...(body.phone === undefined ? {} : { phone: body.phone }),
+            ...(body.status === undefined ? {} : { status: body.status }),
+            ...(pinHash === undefined
+              ? {}
+              : { pinHash, pinSetAt: now, failedPinAttempts: 0, lockedUntil: null }),
+          },
+          select: {
+            id: true,
+            employeeNumber: true,
+            firstName: true,
+            lastName: true,
+            status: true,
+            pinHash: true,
+          },
+        });
+
+        // A driver profile shares the worker's credential, so a reset that did not reach it would
+        // leave the same person able to open one door and not the other.
+        if (pinHash !== undefined || body.status !== undefined) {
+          await tx.driver.updateMany({
+            where: { organizationId, workerId, deletedAt: null },
+            data: {
+              ...(pinHash === undefined
+                ? {}
+                : { pinHash, pinSetAt: now, failedPinAttempts: 0, lockedUntil: null }),
+              ...(body.status === undefined ? {} : { status: body.status }),
+            },
+          });
+        }
+
+        return updated;
+      });
+
+      return {
+        worker: {
+          id: worker.id,
+          employeeNumber: worker.employeeNumber,
+          firstName: worker.firstName,
+          lastName: worker.lastName,
+          status: worker.status,
+          hasPin: worker.pinHash !== null,
+          lockedUntil: null,
+        },
       };
     });
 

@@ -53,6 +53,22 @@ export const IconPeople = (
   </Glyph>
 );
 
+/**
+ * Staff: two people, the second half-behind the first.
+ *
+ * Deliberately different from `IconPeople` rather than a variant of it — one entry is "who is on
+ * shift right now" and the other is "everyone who could be", and two icons a glance apart would
+ * make a supervisor click the wrong one every time.
+ */
+export const IconStaff = (
+  <Glyph>
+    <circle cx="9.5" cy="8" r="3.2" />
+    <path d="M3.5 19.5a6 6 0 0 1 12 0" />
+    <path d="M15.5 5.2a3.2 3.2 0 0 1 0 5.6" />
+    <path d="M17 14.2a6 6 0 0 1 3.5 5.3" />
+  </Glyph>
+);
+
 /** History: a clock, hands set to a past hour rather than to twelve. */
 export const IconHistory = (
   <Glyph>

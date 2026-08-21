@@ -12,6 +12,7 @@ import {
   IconPeople,
   IconRoute,
   IconSignOut,
+  IconStaff,
   IconZones,
 } from './icons';
 
@@ -36,6 +37,9 @@ const OVERVIEW: readonly Entry[] = [{ href: '/admin', label: 'Табло', icon:
 
 const PEOPLE: readonly Entry[] = [
   { href: '/admin/people', label: 'На смяна', icon: IconPeople },
+  // Above history and zones because it is the first thing a new organization needs: the other two
+  // screens have nothing to show until somebody has been added here.
+  { href: '/admin/staff', label: 'Персонал', icon: IconStaff },
   { href: '/admin/history', label: 'История', icon: IconHistory },
   { href: '/admin/areas', label: 'Зони и позиции', icon: IconZones },
 ];

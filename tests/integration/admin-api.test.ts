@@ -368,6 +368,241 @@ describe('the stops on a route', () => {
   });
 });
 
+describe('putting somebody on the roster', () => {
+  const PERSON = {
+    employeeNumber: '2042',
+    firstName: 'Мария',
+    lastName: 'Георгиева',
+    pin: '735100',
+  };
+
+  async function addWorker(target: TestTenant, overrides: Record<string, unknown> = {}) {
+    const { cookie, csrf } = await loginAdmin(target.slug);
+    return app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workers',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { ...PERSON, ...overrides },
+    });
+  }
+
+  it('creates a worker who can then sign in with the PIN the admin chose', async () => {
+    const created = await addWorker(tenant);
+    expect(created.statusCode, created.body).toBe(201);
+
+    // The point of the whole screen: the credential an admin typed opens the worker's door.
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/worker/login',
+      payload: {
+        organizationSlug: tenant.slug,
+        employeeNumber: PERSON.employeeNumber,
+        pin: PERSON.pin,
+      },
+    });
+    expect(login.statusCode, login.body).toBe(200);
+    expect(login.json().actorType).toBe('WORKER');
+  });
+
+  it('never returns the PIN or its hash', async () => {
+    const created = await addWorker(tenant);
+    const body = created.body;
+
+    // Asserted against the raw response text rather than a parsed field, because the failure this
+    // guards against is a hash arriving in some field nobody thought to check.
+    expect(body).not.toContain(PERSON.pin);
+    expect(body).not.toContain('$argon2');
+    expect(body).not.toContain('pinHash');
+    expect(created.json().worker.hasPin).toBe(true);
+
+    const { cookie } = await loginAdmin(tenant.slug);
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/workers',
+      headers: { cookie },
+    });
+    expect(list.body).not.toContain('$argon2');
+    expect(list.body).not.toContain(PERSON.pin);
+    expect(
+      list.json().workers.find((w: { employeeNumber: string }) => w.employeeNumber === '2042')
+        .hasPin,
+    ).toBe(true);
+  });
+
+  it('adds someone without a PIN, who then cannot sign in yet', async () => {
+    // A roster entered on Friday afternoon before the PINs are handed out. "Cannot sign in yet" is
+    // a true state, not a broken one — but it must actually refuse.
+    const created = await addWorker(tenant, { pin: undefined, employeeNumber: '2043' });
+    expect(created.statusCode, created.body).toBe(201);
+    expect(created.json().worker.hasPin).toBe(false);
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/worker/login',
+      payload: { organizationSlug: tenant.slug, employeeNumber: '2043', pin: '0000' },
+    });
+    expect(login.statusCode).toBe(401);
+  });
+
+  it('refuses an employee number already used in this organization', async () => {
+    await addWorker(tenant);
+    const second = await addWorker(tenant);
+
+    expect(second.statusCode).toBe(409);
+    expect(second.json().error.code).toBe('worker.employee_number_taken');
+  });
+
+  it('lets two organizations use the same employee number', async () => {
+    // Employee numbers are unique per tenant. A global rule would mean one customer's numbering
+    // scheme could block another's — and would leak that the number is taken somewhere.
+    expect((await addWorker(tenant)).statusCode).toBe(201);
+    expect((await addWorker(other)).statusCode).toBe(201);
+  });
+
+  it('rejects a PIN that is not 4–8 digits', async () => {
+    const tooShort = await addWorker(tenant, { pin: '12', employeeNumber: '2044' });
+    expect(tooShort.statusCode).toBe(400);
+
+    const notDigits = await addWorker(tenant, { pin: 'abcd12', employeeNumber: '2045' });
+    expect(notDigits.statusCode).toBe(400);
+  });
+
+  /**
+   * The PINs an attacker tries first, refused at the edge.
+   *
+   * These are what a person picks for somebody else when nothing stops them — and a PIN is the
+   * only thing standing between anyone holding the company code and a worker's shift record.
+   */
+  it.each(['0000', '1111', '1234', '4321', '456789'])(
+    'refuses the guessable PIN %s',
+    async (pin) => {
+      const response = await addWorker(tenant, { pin, employeeNumber: `21${pin.slice(0, 2)}` });
+      expect(response.statusCode, response.body).toBe(400);
+    },
+  );
+
+  it('gives a driver profile to somebody who also drives, on the same PIN', async () => {
+    const created = await addWorker(tenant, { isDriver: true });
+    expect(created.statusCode, created.body).toBe(201);
+    expect(created.json().worker.driver.code).toBe(PERSON.employeeNumber);
+
+    // One person, one credential, both doors.
+    const driverLogin = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/driver/login',
+      payload: {
+        organizationSlug: tenant.slug,
+        driverCode: PERSON.employeeNumber,
+        pin: PERSON.pin,
+      },
+    });
+    expect(driverLogin.statusCode, driverLogin.body).toBe(200);
+    expect(driverLogin.json().actorType).toBe('DRIVER');
+  });
+
+  it('never lists another organization’s staff', async () => {
+    await addWorker(other, { employeeNumber: '9001' });
+    const { cookie } = await loginAdmin(tenant.slug);
+
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/workers',
+      headers: { cookie },
+    });
+    const numbers = list
+      .json()
+      .workers.map((worker: { employeeNumber: string }) => worker.employeeNumber);
+    expect(numbers).not.toContain('9001');
+  });
+
+  it('refuses a worker session', async () => {
+    const cookie = await loginWorker(tenant.slug);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workers',
+      headers: { cookie },
+      payload: PERSON,
+    });
+
+    expect(response.statusCode).toBeGreaterThanOrEqual(401);
+    expect(response.statusCode).toBeLessThan(500);
+  });
+});
+
+describe('resetting a PIN', () => {
+  async function seedWorker(): Promise<string> {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workers',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { employeeNumber: '3100', firstName: 'Иван', lastName: 'Петров', pin: '748291' },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    return created.json().worker.id;
+  }
+
+  async function workerLogin(pin: string) {
+    return app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/worker/login',
+      payload: { organizationSlug: tenant.slug, employeeNumber: '3100', pin },
+    });
+  }
+
+  it('replaces the old PIN with the new one', async () => {
+    const workerId = await seedWorker();
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/workers/${workerId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { pin: '350617' },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+
+    expect((await workerLogin('350617')).statusCode).toBe(200);
+    // The old one has to stop working, or a reset is an addition rather than a replacement.
+    expect((await workerLogin('748291')).statusCode).toBe(401);
+  });
+
+  it('deactivates somebody without deleting their history', async () => {
+    const workerId = await seedWorker();
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/workers/${workerId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { status: 'INACTIVE' },
+    });
+
+    const stored = await prisma.worker.findUnique({
+      where: { id: workerId },
+      select: { status: true, deletedAt: true },
+    });
+    expect(stored?.status).toBe('INACTIVE');
+    // Still a row. Every session, shift and production entry ever recorded points at it.
+    expect(stored?.deletedAt).toBeNull();
+  });
+
+  it('reports another organization’s worker as not found', async () => {
+    const workerId = await seedWorker();
+    const { cookie, csrf } = await loginAdmin(other.slug);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/workers/${workerId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { pin: '506183' },
+    });
+
+    // Not found, never forbidden: confirming the row exists elsewhere is itself the leak.
+    expect(response.statusCode).toBe(404);
+  });
+});
+
 describe('registering a vehicle', () => {
   const VAN = {
     registrationNumber: 'CA 1234 AB',
