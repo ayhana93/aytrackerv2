@@ -12,7 +12,9 @@ import {
   ThemeToggle,
   type Column,
 } from '@aytracker/ui';
+import { useState } from 'react';
 import { adminApi, describeError, useApi, type DashboardResponse } from '../../lib/admin';
+import { useSession } from './auth-guard';
 
 /**
  * Admin dashboard.
@@ -103,6 +105,96 @@ function warningText(warning: DashboardResponse['warnings'][number]): {
   }
 }
 
+/**
+ * The two doors an admin has to give their staff, and the code that opens them.
+ *
+ * On the dashboard rather than buried in a settings page, because this is the first thing a new
+ * organization needs and the moment it needs it: an owner who has just signed up has no workers,
+ * no drivers and no way to tell anyone where to go. The links carry the company code in the
+ * query string, so a link forwarded to a phone fills the first field in by itself and nobody has
+ * to read a slug out over a factory floor.
+ */
+function StaffEntrances() {
+  const session = useSession();
+  const [copied, setCopied] = useState<string | null>(null);
+  const slug = session.organizationSlug;
+
+  const copy = (value: string, which: string) => {
+    void navigator.clipboard
+      .writeText(value)
+      .then(() => setCopied(which))
+      // No message on failure: clipboard access is denied outright in some browsers, and the
+      // address is on the screen to be typed either way.
+      .catch(() => undefined);
+  };
+
+  const doors = [
+    {
+      id: 'worker',
+      title: 'Вход за работници',
+      detail: 'Служебен номер и ПИН. Оттам се избира позиция и започва смяна.',
+      href: slug ? `/worker/login?org=${encodeURIComponent(slug)}` : '/worker/login',
+    },
+    {
+      id: 'driver',
+      title: 'Вход за шофьори',
+      detail: 'Код на шофьора и ПИН. Оттам започва курс с превозно средство.',
+      href: slug ? `/driver/login?org=${encodeURIComponent(slug)}` : '/driver/login',
+    },
+  ];
+
+  return (
+    <Card padded={false}>
+      <CardHeader>
+        <div>
+          <h2 className="ay-h3">Вход за персонала</h2>
+          <p className="ay-caption ay-muted">
+            Изпратете тези адреси на хората си. Кодът на фирмата е {slug ?? '—'}.
+          </p>
+        </div>
+        {slug ? (
+          <button
+            type="button"
+            className="ay-button ay-button-ghost"
+            onClick={() => copy(slug, 'slug')}
+          >
+            {copied === 'slug' ? 'Копиран' : 'Копирайте кода'}
+          </button>
+        ) : null}
+      </CardHeader>
+
+      <ul>
+        {doors.map((door) => (
+          <li
+            key={door.id}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--ay-space-4)',
+              padding: 'var(--ay-space-4) var(--ay-space-5)',
+              borderTop: '1px solid var(--ay-border)',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <a className="ay-small" style={{ fontWeight: 550 }} href={door.href}>
+                {door.title}
+              </a>
+              <p className="ay-caption ay-muted">{door.detail}</p>
+            </div>
+            <button
+              type="button"
+              className="ay-button ay-button-ghost"
+              onClick={() => copy(new URL(door.href, window.location.origin).toString(), door.id)}
+            >
+              {copied === door.id ? 'Копиран' : 'Копирайте връзката'}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
 export default function AdminDashboardPage() {
   const state = useApi(() => adminApi.dashboard(), []);
 
@@ -160,6 +252,8 @@ export default function AdminDashboardPage() {
             caption="не се брои за разстояние"
           />
         </Grid>
+
+        <StaffEntrances />
 
         <Grid wide>
           <Card padded={false}>

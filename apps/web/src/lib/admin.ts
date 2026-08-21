@@ -40,17 +40,39 @@ export interface DashboardResponse {
   }[];
 }
 
+export type VehicleType = 'CAR' | 'VAN' | 'TRUCK' | 'BUS' | 'FORKLIFT' | 'OTHER';
+export type FuelType = 'PETROL' | 'DIESEL' | 'LPG' | 'CNG' | 'ELECTRIC' | 'HYBRID' | 'OTHER';
+
 export interface VehicleRow {
   readonly id: string;
   readonly registrationNumber: string;
   readonly make: string;
   readonly model: string;
-  readonly vehicleType: string;
-  readonly fuelType: string;
+  readonly vehicleType: VehicleType;
+  readonly fuelType: FuelType;
   readonly status: 'ACTIVE' | 'IN_MAINTENANCE' | 'OUT_OF_SERVICE' | 'SOLD' | 'ARCHIVED';
   readonly odometer: string;
   readonly averageConsumption: string | null;
   readonly driver: { id: string; name: string; since: string; automatic: boolean } | null;
+}
+
+/**
+ * What registering a vehicle needs.
+ *
+ * Decimals travel as strings, matching how they come back: `odometerCurrent` is a Decimal column,
+ * and a number that goes out as a float and returns as a string is the kind of asymmetry that
+ * produces a mileage rendered as `1.4832e5`.
+ */
+export interface CreateVehicleInput {
+  readonly registrationNumber: string;
+  readonly make: string;
+  readonly model: string;
+  readonly vehicleType: VehicleType;
+  readonly fuelType: FuelType;
+  readonly odometerCurrent?: string;
+  readonly year?: number | null;
+  readonly vin?: string | null;
+  readonly notes?: string;
 }
 
 export interface TripRow {
@@ -89,6 +111,19 @@ export interface TrackResponse {
     gapAfterIndices: readonly number[];
     pointCount: number;
   };
+  /**
+   * Where the vehicle stood still for twenty minutes or more.
+   *
+   * Computed on the server, from timestamps the browser is never sent. The threshold is the
+   * server's to decide — and a figure a client can recompute is a figure a client can change.
+   */
+  readonly stops: readonly {
+    latitude: number;
+    longitude: number;
+    startedAt: string;
+    endedAt: string;
+    seconds: number;
+  }[];
   readonly gaps: readonly {
     startedAt: string;
     endedAt: string | null;
@@ -175,6 +210,8 @@ export const adminApi = {
   dashboard: (query?: { from?: string; to?: string }) =>
     apiRequest<DashboardResponse>('/admin/dashboard', { query }),
   vehicles: () => apiRequest<{ vehicles: VehicleRow[] }>('/admin/vehicles'),
+  createVehicle: (body: CreateVehicleInput) =>
+    apiRequest<{ vehicle: VehicleRow }>('/admin/vehicles', { method: 'POST', body }),
   trips: (query?: { from?: string; to?: string; limit?: number }) =>
     apiRequest<{ trips: TripRow[] }>('/admin/trips', { query }),
   track: (tripId: string) => apiRequest<TrackResponse>(`/admin/trips/${tripId}/track`),

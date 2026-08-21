@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_STOP_OPTIONS,
   admitPoints,
   computeTrackDistance,
   consumptionFromRefuels,
@@ -124,6 +125,77 @@ describe('detectStops', () => {
     const stops = detectStops(points);
     expect(stops).toHaveLength(1);
     expect(stops[0]!.durationSeconds).toBeGreaterThanOrEqual(660);
+  });
+
+  /**
+   * The rule that keeps a stop from becoming an accusation.
+   *
+   * Two points an hour apart in the same street are one departure and one arrival. The vehicle
+   * may have driven a hundred kilometres in between and come back; the app may have been closed;
+   * the phone may have been in a tunnel. Calling that a one-hour stop states something the data
+   * does not support, and it is the kind of statement someone prints and puts in front of a
+   * driver. `findTrackingGaps` already reports the silence for what it is.
+   */
+  it('does not turn a silence into a stop', () => {
+    const base = at('2026-03-10T08:00:00Z');
+    const stops = detectStops([
+      { timestamp: base, latitude: 42.7, longitude: 23.32 },
+      { timestamp: new Date(base.getTime() + 60 * 60_000), latitude: 42.7001, longitude: 23.32 },
+    ]);
+
+    expect(stops).toHaveLength(0);
+  });
+
+  it('ends a stop where the reporting stops, not where it resumes', () => {
+    const base = at('2026-03-10T08:00:00Z');
+    const parked = Array.from({ length: 7 }, (_, index) => ({
+      timestamp: new Date(base.getTime() + index * 60_000),
+      latitude: 42.7,
+      longitude: 23.32,
+    }));
+
+    const stops = detectStops([
+      ...parked,
+      // Same car park, two hours later. The stop above is real; the two hours are not part of it.
+      { timestamp: new Date(base.getTime() + 126 * 60_000), latitude: 42.7, longitude: 23.32 },
+    ]);
+
+    expect(stops).toHaveLength(1);
+    expect(stops[0]!.durationSeconds).toBe(360);
+  });
+
+  it('ignores points too inaccurate to place the vehicle anywhere', () => {
+    const base = at('2026-03-10T08:00:00Z');
+    const stops = detectStops(
+      Array.from({ length: 7 }, (_, index) => ({
+        timestamp: new Date(base.getTime() + index * 60_000),
+        latitude: 42.7,
+        longitude: 23.32,
+        // A 2 km error radius says "somewhere in this city", which is not a loading bay.
+        accuracyMeters: 2000,
+      })),
+    );
+
+    expect(stops).toHaveLength(0);
+  });
+
+  it('holds a long stop together across normal reporting intervals', () => {
+    const base = at('2026-03-10T08:00:00Z');
+    const stops = detectStops(
+      [
+        ...Array.from({ length: 25 }, (_, index) => ({
+          timestamp: new Date(base.getTime() + index * 60_000),
+          latitude: 42.7,
+          longitude: 23.3201,
+          accuracyMeters: 12,
+        })),
+        { timestamp: new Date(base.getTime() + 25 * 60_000), latitude: 42.75, longitude: 23.32 },
+      ],
+      { ...DEFAULT_STOP_OPTIONS, minDurationSeconds: 20 * 60 },
+    );
+
+    expect(stops).toHaveLength(1);
+    expect(stops[0]!.durationSeconds).toBe(24 * 60);
   });
 });
 

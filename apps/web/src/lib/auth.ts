@@ -40,10 +40,33 @@ export interface RegisterInput {
   readonly password: string;
 }
 
+/**
+ * What a worker or a driver types in.
+ *
+ * The organization slug is here because a PIN is only unique inside one tenant — it is a lookup
+ * key that scopes the login, never a claim about who the person is. Everything that decides what
+ * they may do is read from the session row the server writes.
+ */
+export interface WorkerLoginInput {
+  readonly organizationSlug: string;
+  readonly employeeNumber: string;
+  readonly pin: string;
+}
+
+export interface DriverLoginInput {
+  readonly organizationSlug: string;
+  readonly driverCode: string;
+  readonly pin: string;
+}
+
 export const authApi = {
   me: () => apiRequest<MeResponse>('/auth/me'),
   login: (email: string, password: string) =>
     apiRequest<LoginResponse>('/auth/login', { method: 'POST', body: { email, password } }),
+  workerLogin: (input: WorkerLoginInput) =>
+    apiRequest<{ actorType: 'WORKER' }>('/auth/worker/login', { method: 'POST', body: input }),
+  driverLogin: (input: DriverLoginInput) =>
+    apiRequest<{ actorType: 'DRIVER' }>('/auth/driver/login', { method: 'POST', body: input }),
   register: (input: RegisterInput) =>
     apiRequest<RegisterResponse>('/auth/register', { method: 'POST', body: input }),
   logout: () => apiRequest<{ ok: true }>('/auth/logout', { method: 'POST' }),

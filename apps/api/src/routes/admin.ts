@@ -2,10 +2,16 @@ import type { FastifyPluginAsync } from 'fastify';
 import { PERMISSIONS, assertPermission } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
 import { ConflictError, NotFoundError, ValidationError } from '@aytracker/domain';
-import { HaversineRoutingProvider, findTrackingGaps } from '@aytracker/tracking';
+import {
+  DEFAULT_STOP_OPTIONS,
+  HaversineRoutingProvider,
+  detectStops,
+  findTrackingGaps,
+} from '@aytracker/tracking';
 import type { OrganizationId } from '@aytracker/types';
 import {
   createPositionSchema,
+  createVehicleSchema,
   createWorkAreaSchema,
   updatePositionSchema,
   updateWorkAreaSchema,
@@ -27,6 +33,16 @@ import type { AppServices } from '../services/container.js';
 
 /** Long enough to be useful, short enough that a mistyped range cannot pull a year of GPS. */
 const MAX_RANGE_DAYS = 92;
+
+/**
+ * How long standing still has to last before the route map marks it.
+ *
+ * Twenty minutes: long enough to exclude a traffic light, a level crossing and a queue at a
+ * roundabout, short enough to catch a delivery, a loading bay and a coffee. The threshold lives
+ * here rather than in the browser because the browser is not sent the timestamps it would need to
+ * compute it — and because a figure a client can recompute is a figure a client can change.
+ */
+const MIN_STOP_SECONDS = 20 * 60;
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -320,6 +336,110 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       };
     });
 
+    /**
+     * Register a vehicle.
+     *
+     * The counterpart the fleet screen had no way to reach: `GET /vehicles` has always been able
+     * to list an organization's vehicles, and until now the only way to put one in the list was a
+     * seed script. A fleet screen that cannot add a vehicle is a report, not a fleet screen.
+     *
+     * Asks for six things and derives the rest. Registration, make and model identify it; type
+     * and fuel decide how it is treated; the odometer is the number every later reading is
+     * measured against, so it is easier to enter now than to correct later. Tank size, VIN,
+     * consumption and notes are all real fields on the model and all optional here — a vehicle
+     * someone cannot add today because the VIN is in a folder in another building is a vehicle
+     * that gets tracked on paper instead.
+     */
+    app.post('/vehicles', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_CREATE);
+      const body = createVehicleSchema.parse(request.body);
+      const organizationId = actor.organizationId;
+
+      /**
+       * The site is resolved server-side, exactly as it is for a work area.
+       *
+       * `createVehicleSchema` accepts a `siteId` because the fleet import path needs one, but a
+       * client-supplied id is never trusted here: it is checked against this tenant, and anything
+       * else is treated as absent rather than as an error worth explaining to an attacker.
+       */
+      const site = body.siteId
+        ? await services.prisma.site.findFirst({
+            where: { id: body.siteId, organizationId },
+            select: { id: true },
+          })
+        : await services.prisma.site.findFirst({
+            where: { organizationId, status: 'ACTIVE' },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+          });
+
+      // Registration numbers are unique per tenant in the schema. Checked first so the answer is
+      // "this plate is already registered" rather than a constraint violation translated into a
+      // generic conflict.
+      const duplicate = await services.prisma.vehicle.findFirst({
+        where: { organizationId, registrationNumber: body.registrationNumber },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw new ConflictError(
+          'vehicle.registration_taken',
+          'A vehicle with this registration number is already registered.',
+        );
+      }
+
+      const vehicle = await services.prisma.vehicle.create({
+        data: {
+          organizationId,
+          siteId: site?.id ?? null,
+          registrationNumber: body.registrationNumber,
+          vin: body.vin,
+          make: body.make,
+          model: body.model,
+          year: body.year,
+          vehicleType: body.vehicleType,
+          fuelType: body.fuelType,
+          fuelTankCapacity: body.fuelTankCapacity,
+          odometerCurrent: body.odometerCurrent,
+          averageConsumption: body.averageConsumption,
+          consumptionUnit: body.consumptionUnit,
+          notes: body.notes ?? null,
+        },
+        select: {
+          id: true,
+          registrationNumber: true,
+          make: true,
+          model: true,
+          vehicleType: true,
+          fuelType: true,
+          status: true,
+          odometerCurrent: true,
+          averageConsumption: true,
+        },
+      });
+
+      // Assembled field by field rather than spread: `odometerCurrent` is a Decimal, and letting
+      // one reach JSON is how a screen ends up rendering "[object Object]" for a mileage. The
+      // shape below is exactly a row of `GET /vehicles`, so the browser can insert it into the
+      // list it already has.
+      return reply.status(201).send({
+        vehicle: {
+          id: vehicle.id,
+          registrationNumber: vehicle.registrationNumber,
+          make: vehicle.make,
+          model: vehicle.model,
+          vehicleType: vehicle.vehicleType,
+          fuelType: vehicle.fuelType,
+          status: vehicle.status,
+          odometer: vehicle.odometerCurrent.toString(),
+          averageConsumption: vehicle.averageConsumption?.toString() ?? null,
+          // Nobody has been assigned to it yet. Stated rather than omitted, so the row is the
+          // same shape as every other one.
+          driver: null,
+        },
+      });
+    });
+
     /** Every trip in the organization, newest first. */
     app.get('/trips', async (request) => {
       const actor = app.requireAuth(request);
@@ -431,6 +551,10 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         }));
 
         const route = await new HaversineRoutingProvider().reconstruct(points);
+        const stops = detectStops(points, {
+          ...DEFAULT_STOP_OPTIONS,
+          minDurationSeconds: MIN_STOP_SECONDS,
+        });
         const gaps =
           trip.startedAt === null
             ? []
@@ -463,6 +587,20 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
             gapAfterIndices: route.gapAfterIndices,
             pointCount: points.length,
           },
+          /**
+           * Where the vehicle stood still for twenty minutes or more.
+           *
+           * The polyline cannot show this: a van parked for forty minutes and a van passing
+           * through the same junction draw the same pixel. These are the places a route is
+           * actually opened to find — where the day went.
+           */
+          stops: stops.map((stop) => ({
+            latitude: stop.center.latitude,
+            longitude: stop.center.longitude,
+            startedAt: stop.startedAt.toISOString(),
+            endedAt: stop.endedAt.toISOString(),
+            seconds: stop.durationSeconds,
+          })),
           /** The same holes, with times and durations, for the list beside the map. */
           gaps: gaps.map((gap) => ({
             startedAt: gap.startedAt.toISOString(),

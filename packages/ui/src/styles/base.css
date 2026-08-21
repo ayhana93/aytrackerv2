@@ -966,6 +966,30 @@ a {
   flex: none;
 }
 
+/*
+ * Leaflet's tooltip, wearing our surface instead of its own.
+ *
+ * Leaflet ships an opaque white box with a black border, which in dark mode is a row of small
+ * white rectangles scattered over a dark map — it reads as a rendering fault. These labels are
+ * permanently visible on the route map, so they have to belong to the page.
+ */
+.ay-map-tooltip {
+  padding: 0.125rem 0.5rem;
+  border: 1px solid var(--ay-border-strong);
+  border-radius: var(--ay-radius-sm);
+  background: var(--ay-surface);
+  color: var(--ay-text);
+  font-size: var(--ay-type-caption-size);
+  font-weight: 600;
+  box-shadow: var(--ay-shadow-sm);
+  white-space: nowrap;
+}
+
+/* The little arrow is drawn as a border triangle, so it needs the surface colour too. */
+.ay-map-tooltip.leaflet-tooltip-top::before {
+  border-top-color: var(--ay-border-strong);
+}
+
 .ay-bar-track {
   height: 0.5rem;
   border-radius: var(--ay-radius-full);
@@ -998,6 +1022,29 @@ a {
   font-size: var(--ay-type-caption-size);
   font-weight: 600;
   color: var(--ay-text-muted);
+}
+
+/*
+ * An input and the control that acts on it, on one line.
+ *
+ * `stretch` rather than `center`: the button matches the input's height, so the pair reads as one
+ * control rather than as a button that happens to be nearby. The input takes the remaining width
+ * and `min-width: 0` lets it actually give it back — see the note on `.ay-input` below.
+ */
+.ay-field-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--ay-space-3);
+  min-width: 0;
+}
+
+.ay-field-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.ay-field-row > .ay-button {
+  flex: none;
 }
 
 /*
