@@ -40,6 +40,46 @@ export interface DashboardResponse {
   }[];
 }
 
+export type WorkerStatus = 'ACTIVE' | 'INACTIVE' | 'ON_LEAVE' | 'TERMINATED';
+
+export interface WorkerRow {
+  readonly id: string;
+  readonly employeeNumber: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly status: WorkerStatus;
+  /**
+   * Whether a PIN exists. Never the PIN, and never its hash — the server does not send either,
+   * and an admin who forgets one sets a new one rather than reading the old one back. That is
+   * what makes it a credential rather than a note in a database.
+   */
+  readonly hasPin: boolean;
+  /** Locked out by failed attempts, until this moment. Null when they can try again now. */
+  readonly lockedUntil: string | null;
+  readonly createdAt?: string;
+  readonly driver: { id?: string; code: string; status?: string } | null;
+}
+
+export interface CreateWorkerInput {
+  readonly employeeNumber: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly phone?: string | null;
+  readonly pin?: string;
+  readonly isDriver?: boolean;
+  readonly driverCode?: string;
+}
+
+export interface UpdateWorkerInput {
+  readonly firstName?: string;
+  readonly lastName?: string;
+  readonly phone?: string | null;
+  readonly pin?: string;
+  readonly status?: 'ACTIVE' | 'INACTIVE';
+}
+
 export type VehicleType = 'CAR' | 'VAN' | 'TRUCK' | 'BUS' | 'FORKLIFT' | 'OTHER';
 export type FuelType = 'PETROL' | 'DIESEL' | 'LPG' | 'CNG' | 'ELECTRIC' | 'HYBRID' | 'OTHER';
 
@@ -216,6 +256,12 @@ export const adminApi = {
     apiRequest<{ trips: TripRow[] }>('/admin/trips', { query }),
   track: (tripId: string) => apiRequest<TrackResponse>(`/admin/trips/${tripId}/track`),
   branding: () => apiRequest<BrandingResponse>('/admin/branding'),
+
+  workers: () => apiRequest<{ workers: WorkerRow[] }>('/admin/workers'),
+  createWorker: (body: CreateWorkerInput) =>
+    apiRequest<{ worker: WorkerRow }>('/admin/workers', { method: 'POST', body }),
+  updateWorker: (workerId: string, body: UpdateWorkerInput) =>
+    apiRequest<{ worker: WorkerRow }>(`/admin/workers/${workerId}`, { method: 'PATCH', body }),
 
   areas: () => apiRequest<{ areas: WorkAreaRow[] }>('/admin/areas'),
   createArea: (body: { name: string; description?: string }) =>

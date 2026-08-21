@@ -95,26 +95,14 @@ export const updateRecommendationStatusSchema = z.object({
   roadmapItemId: uuidSchema.nullable().optional(),
 });
 
-export const createWorkerSchema = z.object({
-  employeeNumber: codeSchema,
-  firstName: z.string().trim().min(1).max(80),
-  lastName: z.string().trim().min(1).max(80),
-  email: emailSchema.nullable().optional(),
-  phone: z.string().trim().max(32).nullable().optional(),
-  siteId: uuidSchema.nullable().default(null),
-  preferredLocale: localeSchema.nullable().optional(),
-  /** Optional initial PIN. Omitted means PIN login is disabled until one is set. */
-  pin: z
-    .string()
-    .regex(/^\d{4,8}$/)
-    .optional(),
-});
-
 /*
- * `createPositionSchema` used to live here as well, unused, requiring a `siteId` and a `code`
- * the caller had to invent. The one the admin API actually parses is in `workforce.ts`, which
- * derives both. Two schemas for one concept is the drift this package exists to prevent, so the
- * one nothing imported was removed rather than kept "just in case".
+ * `createWorkerSchema` and `createPositionSchema` both used to live here, unused.
+ *
+ * Neither is platform-level: a worker and a position belong to a tenant's workforce, which is
+ * what `workforce.ts` is for, and this file is for the things the platform operator does — create
+ * an organization, set its branding, triage a recommendation. `createWorkerSchema` moved there
+ * when the admin API grew a route that parses it; `createPositionSchema` was a second, worse copy
+ * of one already in `workforce.ts` and was removed rather than kept "just in case".
  */
 
 export type CreateOrganizationRequest = z.infer<typeof createOrganizationSchema>;

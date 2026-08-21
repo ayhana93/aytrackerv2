@@ -68,6 +68,19 @@ export function StaffLogin({
   onSubmit,
 }: StaffLoginProps) {
   const [organizationSlug, setOrganizationSlug] = useState('');
+  /**
+   * Whether the company was decided by the link rather than typed.
+   *
+   * When it was, the field is not a field: it is a fact, rendered as text. A worker standing at a
+   * terminal has no business editing which company they are signing in to, and an editable box is
+   * an invitation to try — one stray keystroke and the answer becomes "грешни данни" for a person
+   * whose number and PIN were both correct. It is also the setting where the shared tablet lives,
+   * so whatever is typed there is typed by whoever is standing in front of it.
+   *
+   * `null` while the effect has not run: rendering an empty editable field for one frame and then
+   * swapping it for fixed text is a visible flicker on the first screen of the product.
+   */
+  const [fixedCompany, setFixedCompany] = useState<boolean | null>(null);
   const [identifier, setIdentifier] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -75,8 +88,16 @@ export function StaffLogin({
 
   useEffect(() => {
     // A link from the admin panel carries the code, which beats both typing and remembering.
-    const fromLink = new URLSearchParams(window.location.search).get('org');
-    setOrganizationSlug(fromLink?.trim().toLowerCase() || rememberedSlug());
+    const fromLink = new URLSearchParams(window.location.search).get('org')?.trim().toLowerCase();
+    if (fromLink) {
+      setOrganizationSlug(fromLink);
+      setFixedCompany(true);
+      return;
+    }
+    // No code in the link: fall back to what this device used last, and let it be typed if there
+    // is nothing. A locked-down field with nothing in it would be a door with no handle.
+    setOrganizationSlug(rememberedSlug());
+    setFixedCompany(false);
   }, []);
 
   const ready = organizationSlug.trim() !== '' && identifier.trim() !== '' && /^\d{4,8}$/.test(pin);
@@ -161,17 +182,29 @@ export function StaffLogin({
             </p>
           </div>
 
-          <Field label="Код на фирмата" hint="Получавате го от вашия ръководител">
-            <input
-              className="ay-input"
-              type="text"
-              autoComplete="organization"
-              inputMode="text"
-              required
-              value={organizationSlug}
-              onChange={(event) => setOrganizationSlug(event.target.value.toLowerCase())}
-            />
-          </Field>
+          {fixedCompany === null ? null : fixedCompany ? (
+            <div>
+              <span className="ay-label">Фирма</span>
+              <p
+                className="ay-small ay-numeric"
+                style={{ fontWeight: 600, marginTop: 'var(--ay-space-1)' }}
+              >
+                {organizationSlug}
+              </p>
+            </div>
+          ) : (
+            <Field label="Код на фирмата" hint="Получавате го от вашия ръководител">
+              <input
+                className="ay-input"
+                type="text"
+                autoComplete="organization"
+                inputMode="text"
+                required
+                value={organizationSlug}
+                onChange={(event) => setOrganizationSlug(event.target.value.toLowerCase())}
+              />
+            </Field>
+          )}
 
           <Field label={identifierLabel} hint={identifierHint}>
             <input
