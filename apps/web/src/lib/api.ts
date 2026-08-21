@@ -86,14 +86,25 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     if (token) headers['x-csrf-token'] = token;
   }
 
-  const response = await fetch(url, {
-    method,
-    headers,
-    // Without this the session cookie is simply not sent and every call is a 401.
-    credentials: 'include',
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      // Without this the session cookie is simply not sent and every call is a 401.
+      credentials: 'include',
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  } catch (error) {
+    // `fetch` rejects with a bare TypeError when the API cannot be reached at all — the service
+    // is down, DNS fails, the origin is not on the CORS allow-list. Left as a TypeError it looks
+    // to a caller like a bug in its own code, so the sign-up screen said "registration failed"
+    // during an outage in which nothing about the registration was wrong. Given a status of 0 it
+    // becomes a distinguishable condition callers can report honestly.
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new ApiError(0, 'network.unreachable', 'NETWORK', 'The API could not be reached.');
+  }
 
   if (!response.ok) {
     // A proxy or a crash can return HTML where JSON was expected. Parsing defensively means the
