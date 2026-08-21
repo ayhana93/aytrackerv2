@@ -525,13 +525,33 @@ export interface FieldProps {
   readonly label: string;
   readonly hint?: string;
   readonly children: ReactNode;
+  /**
+   * A control that belongs to this input — the button that submits it, a unit selector.
+   *
+   * It exists because the obvious call-site version is wrong in a way that is easy to miss.
+   * Laying a field and a button side by side in a flex row aligned to `flex-end` looks right
+   * until the field has a hint: the hint is part of the field, so the row grows, and the button
+   * settles level with the hint text instead of the input it belongs to — visibly adrift, and
+   * the further from the input the longer the hint.
+   *
+   * Putting the action inside the field fixes it for every caller at once: the input and the
+   * action share a row, and the hint sits under both.
+   */
+  readonly action?: ReactNode;
 }
 
-export function Field({ label, hint, children }: FieldProps) {
+export function Field({ label, hint, children, action }: FieldProps) {
   return (
     <label className="ay-field">
       <span className="ay-label">{label}</span>
-      {children}
+      {action ? (
+        <span className="ay-field-row">
+          {children}
+          {action}
+        </span>
+      ) : (
+        children
+      )}
       {hint ? <span className="ay-caption ay-muted">{hint}</span> : null}
     </label>
   );

@@ -248,6 +248,7 @@ export default function TripsPage() {
                 <>
                   <RouteMap
                     track={track.data.track}
+                    stops={track.data.stops}
                     label={`Маршрут на ${track.data.trip.vehicle.registrationNumber}`}
                   />
 
@@ -273,6 +274,44 @@ export default function TripsPage() {
                       }
                     />
                   </Grid>
+
+                  {track.data.stops.length > 0 ? (
+                    <div style={{ marginTop: 'var(--ay-space-5)' }}>
+                      <p className="ay-small" style={{ fontWeight: 550 }}>
+                        Престои над 20 минути
+                      </p>
+                      {/*
+                        Where the time went, in the order it went. A route drawn as one line
+                        cannot show this — a van parked for forty minutes and a van passing
+                        through the same junction are the same pixel.
+                      */}
+                      <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-1)' }}>
+                        Мястото е средното от получените точки. Периодите без данни не се броят за
+                        престой.
+                      </p>
+                      <ul style={{ marginTop: 'var(--ay-space-3)' }}>
+                        {track.data.stops.map((stop) => (
+                          <li
+                            key={stop.startedAt}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              gap: 'var(--ay-space-3)',
+                              padding: 'var(--ay-space-2) 0',
+                              borderTop: '1px solid var(--ay-border)',
+                            }}
+                          >
+                            <span className="ay-small">
+                              {time(stop.startedAt)} → {time(stop.endedAt)}
+                            </span>
+                            <span className="ay-small ay-numeric" style={{ fontWeight: 550 }}>
+                              {duration(stop.seconds)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
 
                   {track.data.gaps.length > 0 ? (
                     <div style={{ marginTop: 'var(--ay-space-5)' }}>

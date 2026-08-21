@@ -123,11 +123,27 @@ export interface StopDetectionOptions {
   readonly radiusMeters: number;
   /** …for at least this long. */
   readonly minDurationSeconds: number;
+  /**
+   * Longer than this between two reports and the cluster breaks.
+   *
+   * Silence is not a stop. If the device reported nothing for half an hour, we do not know the
+   * vehicle stood still — it may have driven a hundred kilometres and come back to the same
+   * street. Two points an hour apart in the same car park are one arrival and one departure, and
+   * calling that a one-hour stop asserts something the data does not support. The silence is
+   * already reported for what it is, by `findTrackingGaps`.
+   */
+  readonly maxGapSeconds: number;
+  /** Points less accurate than this are not evidence of standing anywhere in particular. */
+  readonly maxAccuracyMeters: number;
 }
 
 export const DEFAULT_STOP_OPTIONS: StopDetectionOptions = {
   radiusMeters: 60,
   minDurationSeconds: 180,
+  // The same threshold the distance integrator and the gap finder use, so all three agree on
+  // what counts as a break in the record.
+  maxGapSeconds: 300,
+  maxAccuracyMeters: 100,
 };
 
 export interface DetectedStop {
@@ -137,12 +153,25 @@ export interface DetectedStop {
   readonly center: GeoPoint;
 }
 
-/** Finds where the vehicle stood still — loading bays, breaks, traffic. */
+/**
+ * Finds where the vehicle stood still — loading bays, breaks, traffic.
+ *
+ * Anchored on the cluster's first point rather than a rolling centre: an anchor that moves with
+ * the cluster can drift, one radius at a time, along a road the vehicle was slowly driving down,
+ * and report a crawling traffic jam as a stop.
+ */
 export function detectStops(
   points: readonly TrackPoint[],
   options: StopDetectionOptions = DEFAULT_STOP_OPTIONS,
 ): readonly DetectedStop[] {
-  const ordered = [...points].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  const ordered = [...points]
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+    .filter(
+      (point) =>
+        point.accuracyMeters === null ||
+        point.accuracyMeters === undefined ||
+        point.accuracyMeters <= options.maxAccuracyMeters,
+    );
   const stops: DetectedStop[] = [];
 
   let anchorIndex = 0;
@@ -151,10 +180,17 @@ export function detectStops(
     const current = ordered[i];
     if (!anchor) break;
 
-    const leftRadius = current ? haversineMeters(anchor, current) > options.radiusMeters : true;
+    const previous = ordered[i - 1]!;
+    const silence = current
+      ? (current.timestamp.getTime() - previous.timestamp.getTime()) / 1000
+      : 0;
+    // A break in the record ends the cluster wherever it falls, even inside the radius.
+    const leftRadius = current
+      ? haversineMeters(anchor, current) > options.radiusMeters || silence > options.maxGapSeconds
+      : true;
     if (!leftRadius) continue;
 
-    const last = ordered[i - 1]!;
+    const last = previous;
     const duration = (last.timestamp.getTime() - anchor.timestamp.getTime()) / 1000;
     if (i - 1 > anchorIndex && duration >= options.minDurationSeconds) {
       const cluster = ordered.slice(anchorIndex, i);

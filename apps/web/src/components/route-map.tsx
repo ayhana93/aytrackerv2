@@ -26,11 +26,25 @@ import type { TrackResponse } from '../lib/admin';
 
 export interface RouteMapProps {
   readonly track: TrackResponse['track'];
+  /** Places the vehicle stood still long enough to be worth asking about. */
+  readonly stops?: TrackResponse['stops'];
   readonly height?: number;
   readonly label?: string;
 }
 
-export function RouteMap({ track, height = 420, label }: RouteMapProps) {
+/** Duration as a person would say it, for a marker tooltip. */
+function spokenDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  if (hours === 0) return `${minutes} мин`;
+  return minutes === 0 ? `${hours} ч` : `${hours} ч ${minutes} мин`;
+}
+
+function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' });
+}
+
+export function RouteMap({ track, stops = [], height = 420, label }: RouteMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
 
@@ -48,12 +62,24 @@ export function RouteMap({ track, height = 420, label }: RouteMapProps) {
       if (cancelled || !containerRef.current) return;
 
       map = L.map(container, {
-        // Nothing here is a gesture the reader needs, and a map that zooms when someone scrolls
-        // past it hijacks the page. Zoom stays on the buttons.
+        /**
+         * Wheel zoom is off until the map is clicked, then on until focus leaves.
+         *
+         * Both halves matter. A map that zooms whenever a wheel passes over it hijacks the page —
+         * someone scrolling to the figures below ends up looking at a street. But zoom is the
+         * whole point of a route: "where did they go" is a question you answer by going in. So the
+         * gesture is armed by a deliberate click, which is also what a reader does before trying
+         * to zoom, and disarmed when they leave.
+         */
         scrollWheelZoom: false,
+        // Two-finger pinch on a touch screen never has the ambiguity a wheel does.
+        touchZoom: true,
         attributionControl: true,
       });
       mapRef.current = map;
+
+      map.on('click focus', () => map?.scrollWheelZoom.enable());
+      map.on('mouseout blur', () => map?.scrollWheelZoom.disable());
 
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
@@ -112,6 +138,34 @@ export function RouteMap({ track, height = 420, label }: RouteMapProps) {
         }).addTo(map);
       }
 
+      /**
+       * The stops, drawn on top of the line.
+       *
+       * A parked vehicle and a passing one draw the same pixel, so without these the forty
+       * minutes in a yard are simply not in the picture. Sized by duration — a two-hour stop is a
+       * bigger fact than a twenty-minute one — but clamped, because a marker that swallows the
+       * route it sits on stops being information.
+       *
+       * The tooltip is permanently open rather than on hover: these are the reason the map was
+       * opened, and hiding them behind a hover means they are invisible on a phone and invisible
+       * in a screenshot.
+       */
+      for (const stop of stops) {
+        const radius = Math.min(16, 8 + Math.round(stop.seconds / 1800) * 2);
+        L.circleMarker([stop.latitude, stop.longitude], {
+          radius,
+          color: '#B45309',
+          fillColor: '#F59E0B',
+          fillOpacity: 0.85,
+          weight: 2,
+        })
+          .addTo(map)
+          .bindTooltip(
+            `${spokenDuration(stop.seconds)} · ${clockTime(stop.startedAt)}–${clockTime(stop.endedAt)}`,
+            { permanent: true, direction: 'top', className: 'ay-map-tooltip', opacity: 1 },
+          );
+      }
+
       const start = points[0];
       const end = points.at(-1);
       if (start) {
@@ -140,7 +194,7 @@ export function RouteMap({ track, height = 420, label }: RouteMapProps) {
       map?.remove();
       mapRef.current = null;
     };
-  }, [track]);
+  }, [track, stops]);
 
   return (
     <div>
@@ -158,6 +212,9 @@ export function RouteMap({ track, height = 420, label }: RouteMapProps) {
         role="img"
         aria-label={label ?? 'Карта на маршрута'}
       />
+      <p className="ay-caption ay-subtle" style={{ marginTop: 'var(--ay-space-2)' }}>
+        Приближавайте с бутоните + и −, с колелцето след щракване върху картата, или с два пръста.
+      </p>
       <div className="ay-legend" style={{ marginTop: 'var(--ay-space-3)' }}>
         <span className="ay-legend-item">
           <span className="ay-legend-swatch" style={{ background: '#2563EB' }} aria-hidden="true" />
@@ -171,6 +228,16 @@ export function RouteMap({ track, height = 420, label }: RouteMapProps) {
           />
           Без данни — не се брои за разстояние
         </span>
+        {stops.length > 0 ? (
+          <span className="ay-legend-item">
+            <span
+              className="ay-legend-swatch"
+              style={{ background: '#F59E0B' }}
+              aria-hidden="true"
+            />
+            Престой над 20 минути
+          </span>
+        ) : null}
       </div>
     </div>
   );

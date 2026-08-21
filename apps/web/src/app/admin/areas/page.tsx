@@ -112,24 +112,30 @@ export default function AreasPage() {
         </Grid>
 
         <Card>
-          <form
-            onSubmit={submitArea}
-            style={{ display: 'flex', gap: 'var(--ay-space-3)', alignItems: 'flex-end' }}
-          >
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <Field label="Нова зона" hint="Например: Цех 1, Склад, Транспорт, Офис — етаж 2">
-                <input
-                  className="ay-input"
-                  type="text"
-                  value={newArea}
-                  maxLength={80}
-                  onChange={(event) => setNewArea(event.target.value)}
-                />
-              </Field>
-            </div>
-            <Button type="submit" disabled={addingArea || newArea.trim().length < 2}>
-              {addingArea ? 'Добавяне…' : 'Добавете зона'}
-            </Button>
+          {/*
+            The button lives inside the field rather than beside it. Side by side in a row aligned
+            to `flex-end`, it sank to the level of the hint text under the input — the hint is part
+            of the field, so the field is taller than the button, and the button ended up level
+            with a line of grey help text instead of the input it submits.
+          */}
+          <form onSubmit={submitArea}>
+            <Field
+              label="Нова зона"
+              hint="Например: Цех 1, Склад, Транспорт, Офис — етаж 2"
+              action={
+                <Button type="submit" disabled={addingArea || newArea.trim().length < 2}>
+                  {addingArea ? 'Добавяне…' : 'Добавете зона'}
+                </Button>
+              }
+            >
+              <input
+                className="ay-input"
+                type="text"
+                value={newArea}
+                maxLength={80}
+                onChange={(event) => setNewArea(event.target.value)}
+              />
+            </Field>
           </form>
           {areaError ? (
             <p
