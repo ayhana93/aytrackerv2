@@ -1,5 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, sessionCookieOptions } from '@aytracker/auth';
+import {
+  CSRF_COOKIE_NAME,
+  SESSION_COOKIE_NAME,
+  issueCsrfToken,
+  sessionCookieOptions,
+} from '@aytracker/auth';
 import {
   adminLoginSchema,
   driverLoginSchema,
@@ -224,7 +229,7 @@ export function authRoutes(services: AppServices): FastifyPluginAsync {
     });
 
     /** Who am I. The client renders navigation from this, never from a decoded token. */
-    app.get('/me', async (request) => {
+    app.get('/me', async (request, reply) => {
       const actor = app.requireAuth(request);
       const [entitlements, organization] = await Promise.all([
         services.entitlements.forOrganization(actor.organizationId),
@@ -233,9 +238,41 @@ export function authRoutes(services: AppServices): FastifyPluginAsync {
           select: { name: true, slug: true },
         }),
       ]);
+      /**
+       * The CSRF token, handed back where the browser can actually get at it.
+       *
+       * The double-submit token is a cookie deliberately readable by script — but only by script
+       * on the cookie's own site. Deployed the way this product is on Railway, the API and the web
+       * app are two different sites (`…api-production.up.railway.app` and
+       * `…web-production.up.railway.app`), so the browser dutifully *sends* `ay_csrf` with every
+       * request and the web app's JavaScript cannot *read* a single character of it. The result
+       * was that every mutation from the browser — adding a worker, a zone, a vehicle — was
+       * refused with `auth.csrf_failed`, while reads worked and login worked (the check only runs
+       * once a session cookie exists). It looked like a permissions problem and was not.
+       *
+       * Echoing the value here costs nothing in security. Double-submit rests on a cross-origin
+       * attacker being unable to *read* the token: they can make the browser send this request
+       * with its cookies, but CORS lets only the configured web origin read the response. That is
+       * exactly the property the readable cookie provided when both halves shared a site.
+       *
+       * The incoming cookie is echoed rather than replaced so two tabs never disagree; a session
+       * that somehow arrives without one is given a fresh token instead of being left unable to
+       * write anything.
+       */
+      const existingCsrf = request.cookies[CSRF_COOKIE_NAME];
+      const csrfToken = existingCsrf ?? issueCsrfToken();
+      if (!existingCsrf) {
+        const ttl = services.config.sessionTtlSeconds[actor.actorType];
+        void reply.setCookie(CSRF_COOKIE_NAME, csrfToken, {
+          ...cookieOptions(ttl),
+          httpOnly: false,
+        });
+      }
+
       return {
         actorType: actor.actorType,
         organizationId: actor.organizationId,
+        csrfToken,
         /**
          * Carried here because the admin has to be able to read it out to their staff: it is
          * what a worker types on their own login screen. Somewhere in the interface has to

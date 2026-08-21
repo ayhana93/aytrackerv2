@@ -57,11 +57,62 @@ function apiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 }
 
-/** The CSRF cookie is script-readable by design; that is how double-submit works. */
-function csrfToken(): string | null {
+/**
+ * The CSRF token, from wherever this deployment makes it available.
+ *
+ * The token is a cookie that is script-readable *by design* — that is how double-submit works.
+ * But "script-readable" means readable by script on the cookie's own site, and this product is
+ * routinely deployed with the API and the web app on two different sites (on Railway,
+ * `…api-production.up.railway.app` and `…web-production.up.railway.app`). There the browser sends
+ * `ay_csrf` faithfully with every request and this function can never see it, so no header was
+ * ever set and the server refused every mutation with `auth.csrf_failed` — a 403 that reads as
+ * "you don't have access" and was nothing of the sort.
+ *
+ * So the cookie is tried first, which is correct and free when both halves share a site, and
+ * `/auth/me` supplies the same value otherwise. `apiRequest` caches it from any response that
+ * carries one.
+ */
+let cachedCsrfToken: string | null = null;
+
+function csrfCookie(): string | null {
   if (typeof document === 'undefined') return null;
   const match = /(?:^|;\s*)ay_csrf=([^;]+)/.exec(document.cookie);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function csrfToken(): string | null {
+  return csrfCookie() ?? cachedCsrfToken;
+}
+
+/**
+ * Ask `/auth/me` for the token, once, and remember it.
+ *
+ * Concurrent callers share one in-flight request: an admin screen that fires three mutations at
+ * once should not send three identical round trips before any of them starts.
+ */
+let csrfRefresh: Promise<string | null> | null = null;
+
+async function refreshCsrfToken(): Promise<string | null> {
+  csrfRefresh ??= (async () => {
+    try {
+      const response = await fetch(new URL('/api/v1/auth/me', apiBaseUrl()), {
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const body = (await response.json()) as { csrfToken?: unknown };
+      return typeof body.csrfToken === 'string' ? body.csrfToken : null;
+    } catch {
+      // Unreachable API. The caller's own request is about to fail with a better message than
+      // anything this helper could produce.
+      return null;
+    } finally {
+      csrfRefresh = null;
+    }
+  })();
+
+  const token = await csrfRefresh;
+  if (token) cachedCsrfToken = token;
+  return token;
 }
 
 export interface RequestOptions {
@@ -71,7 +122,11 @@ export interface RequestOptions {
   readonly signal?: AbortSignal;
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function apiRequest<T>(
+  path: string,
+  options: RequestOptions = {},
+  retried = false,
+): Promise<T> {
   const url = new URL(`/api/v1${path}`, apiBaseUrl());
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
@@ -82,7 +137,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (options.body !== undefined) headers['content-type'] = 'application/json';
 
   if (method !== 'GET') {
-    const token = csrfToken();
+    // Fetched rather than skipped when unknown. A mutation sent without the header is refused by
+    // the server, and "refused" is indistinguishable from a permission problem in the response.
+    const token = csrfToken() ?? (await refreshCsrfToken());
     if (token) headers['x-csrf-token'] = token;
   }
 
@@ -110,6 +167,21 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     // A proxy or a crash can return HTML where JSON was expected. Parsing defensively means the
     // user sees "something went wrong" rather than a JSON syntax error from deep in the client.
     const body = (await response.json().catch(() => null)) as ApiErrorBody | null;
+
+    /**
+     * A rejected CSRF token is worth exactly one retry.
+     *
+     * The cached token can go stale — a second tab signed in again, or the session was reissued —
+     * and the failure is invisible to the person, who sees a permission error for a button they
+     * are perfectly entitled to press. `retry` guards against a loop when the server refuses the
+     * fresh token too.
+     */
+    if (body?.error?.code === 'auth.csrf_failed' && !retried) {
+      cachedCsrfToken = null;
+      const token = await refreshCsrfToken();
+      if (token) return apiRequest<T>(path, options, true);
+    }
+
     throw new ApiError(
       response.status,
       body?.error?.code ?? 'http.error',
@@ -120,5 +192,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+
+  const payload = (await response.json()) as T;
+  // `/auth/me` carries the token for deployments where the cookie is on another site. Cached in
+  // one place so no screen has to know that this is how it arrives.
+  const carried = (payload as { csrfToken?: unknown } | null)?.csrfToken;
+  if (typeof carried === 'string') cachedCsrfToken = carried;
+  return payload;
 }

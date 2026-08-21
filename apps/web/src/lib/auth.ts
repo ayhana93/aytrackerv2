@@ -18,6 +18,12 @@ export interface MeResponse {
   readonly userId: string | null;
   readonly permissions: readonly string[];
   readonly features: readonly string[];
+  /**
+   * The double-submit token, for deployments where the API and the web app are different sites
+   * and the browser will not let this app read the cookie. `apiRequest` caches it; no screen
+   * needs to touch it.
+   */
+  readonly csrfToken: string;
 }
 
 export interface LoginResponse {

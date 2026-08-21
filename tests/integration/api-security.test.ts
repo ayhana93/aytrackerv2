@@ -370,6 +370,79 @@ describe('CSRF', () => {
     });
     expect(response.statusCode).toBe(200);
   });
+
+  /**
+   * The test the suite was missing, and the outage it would have caught.
+   *
+   * Every case above reads the token out of the `Set-Cookie` header, which is what a browser can
+   * do only when the API and the web app share a site. Deployed with the two on separate hosts —
+   * which is how this product runs on Railway — the browser still *sends* `ay_csrf` but the web
+   * app's JavaScript cannot *read* it, so no header was ever attached and the server refused
+   * every mutation with `auth.csrf_failed`. Reads worked, login worked, and the interface said
+   * "Нямате достъп до тези данни" for an owner with every permission there is.
+   *
+   * So this case is deliberately hobbled the way that browser is: it may send the cookies, and it
+   * may read only what the API puts in a response body.
+   */
+  it('gives a cross-site client a token it can actually use', async () => {
+    const worker = await loginWorker();
+
+    const me = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { cookie: worker.cookies },
+    });
+    expect(me.statusCode, me.body).toBe(200);
+    const token = me.json().csrfToken;
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThan(20);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/shift/start',
+      headers: { cookie: worker.cookies, 'x-csrf-token': token },
+      payload: {
+        clientActionId: randomUUID(),
+        siteId: tenant.siteId,
+        initialPositionId: tenant.positionIds.machine1,
+      },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+  });
+
+  it('does not rotate the token out from under a second tab', async () => {
+    // Two calls to /auth/me must agree. Minting a fresh token on each one would mean a tab that
+    // loaded a minute ago holds a value the server no longer accepts.
+    const worker = await loginWorker();
+    const read = async () =>
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/auth/me',
+          headers: { cookie: worker.cookies },
+        })
+      ).json().csrfToken;
+
+    expect(await read()).toBe(await read());
+  });
+
+  it('still refuses a token that does not match the cookie', async () => {
+    // The whole point survives: handing the value to its owner is not the same as accepting any
+    // value. An attacker who cannot read the response cannot guess this.
+    const worker = await loginWorker();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/shift/start',
+      headers: { cookie: worker.cookies, 'x-csrf-token': 'not-the-token' },
+      payload: {
+        clientActionId: randomUUID(),
+        siteId: tenant.siteId,
+        initialPositionId: tenant.positionIds.machine1,
+      },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error.code).toBe('auth.csrf_failed');
+  });
 });
 
 describe('expired and revoked sessions', () => {
