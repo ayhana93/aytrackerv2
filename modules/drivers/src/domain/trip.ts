@@ -98,119 +98,13 @@ export function computeTripTotals(input: {
   };
 }
 
-/**
- * Validates a location batch before any of it is stored.
+/*
+ * Location admission used to live here, keyed on a trip.
  *
- * Rules, and why each exists:
- *   * The trip must be ACTIVE. No location is accepted for a planned, paused, completed or
- *     cancelled trip — "do not collect location when there is no active tracking session" is a
- *     privacy promise, so it is enforced at ingestion rather than trusted to the client.
- *   * Timestamps are clamped into the trip window. A device with a wrong clock cannot write
- *     points into yesterday or tomorrow.
- *   * Batches are size-limited. The ingestion endpoint is the highest-frequency writer in the
- *     system and the most attractive way to try to exhaust it.
+ * It is now `admitPoints` in `@aytracker/module-tracking`, keyed on a tracking session — because
+ * an employee's working day needs exactly the same rules and is not a trip. One copy, one set of
+ * rules, one place a mistake can be made.
  */
-export const MAX_LOCATION_BATCH_SIZE = 500;
-
-export interface RawLocationPoint {
-  readonly timestamp: Date;
-  readonly latitude: number;
-  readonly longitude: number;
-  readonly accuracyMeters?: number | null;
-  readonly speedMps?: number | null;
-  readonly heading?: number | null;
-  readonly altitude?: number | null;
-  readonly source?: string;
-}
-
-export interface AcceptedLocationPoint extends RawLocationPoint {
-  readonly isBackfilled: boolean;
-}
-
-export interface LocationBatchResult {
-  readonly accepted: readonly AcceptedLocationPoint[];
-  readonly rejected: number;
-  readonly clamped: number;
-}
-
-export function validateLocationBatch(input: {
-  trip: TripState;
-  points: readonly RawLocationPoint[];
-  now: Date;
-  /** Points older than this are considered a queued offline replay rather than live data. */
-  backfillThresholdSeconds: number;
-}): LocationBatchResult {
-  if (input.trip.status !== 'ACTIVE') {
-    throw new PreconditionFailedError(
-      'tracking.trip_not_active',
-      'Location can only be recorded for an active trip.',
-    );
-  }
-  if (!input.trip.startedAt) {
-    throw new PreconditionFailedError('tracking.trip_not_started', 'This trip has no start time.');
-  }
-  if (input.points.length === 0) {
-    return { accepted: [], rejected: 0, clamped: 0 };
-  }
-  if (input.points.length > MAX_LOCATION_BATCH_SIZE) {
-    throw new ValidationError(
-      'tracking.batch_too_large',
-      `A batch may contain at most ${MAX_LOCATION_BATCH_SIZE} points.`,
-    );
-  }
-
-  const windowStart = input.trip.startedAt.getTime();
-  const windowEnd = input.now.getTime();
-
-  const accepted: AcceptedLocationPoint[] = [];
-  let rejected = 0;
-  let clamped = 0;
-
-  for (const point of input.points) {
-    if (!isValidCoordinate(point.latitude, point.longitude)) {
-      rejected += 1;
-      continue;
-    }
-    if (
-      point.accuracyMeters !== undefined &&
-      point.accuracyMeters !== null &&
-      point.accuracyMeters < 0
-    ) {
-      rejected += 1;
-      continue;
-    }
-
-    let timestamp = point.timestamp;
-    if (timestamp.getTime() < windowStart) {
-      timestamp = new Date(windowStart);
-      clamped += 1;
-    } else if (timestamp.getTime() > windowEnd) {
-      // A point from the future is a clock-skew artefact, not evidence of anything.
-      timestamp = new Date(windowEnd);
-      clamped += 1;
-    }
-
-    const ageSeconds = (windowEnd - timestamp.getTime()) / 1000;
-    accepted.push({
-      ...point,
-      timestamp,
-      isBackfilled: ageSeconds > input.backfillThresholdSeconds,
-    });
-  }
-
-  return { accepted, rejected, clamped };
-}
-
-export function isValidCoordinate(latitude: number, longitude: number): boolean {
-  return (
-    Number.isFinite(latitude) &&
-    Number.isFinite(longitude) &&
-    latitude >= -90 &&
-    latitude <= 90 &&
-    longitude >= -180 &&
-    longitude <= 180
-  );
-}
 
 /**
  * Guards the "never duplicate a trip start" rule for offline replays.

@@ -1,15 +1,14 @@
-import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
+import type { DatabaseClient, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
 import { ConflictError, NotFoundError } from '@aytracker/domain';
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
-import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
-import type { AcceptedLocationPoint, PauseInterval, TripState } from '../domain/trip.js';
+import type { TrackingState } from '@aytracker/tracking';
+import type { PauseInterval, TripState } from '../domain/trip.js';
 import type {
   DriverTransactionRunner,
   DriverUnitOfWork,
   DriverVehicleAccess,
-  LocationPointRepository,
-  TrackingEventRepository,
+  TripPointAccess,
   TripRepository,
 } from '../domain/ports.js';
 
@@ -185,35 +184,18 @@ export class PrismaTripRepository implements TripRepository {
   }
 }
 
-export class PrismaLocationPointRepository implements LocationPointRepository {
+/**
+ * A trip's own points, read back through the trip overlay.
+ *
+ * The rows live in `location_points`, owned by whichever tracking session was running. A trip's
+ * points are the subset tagged with its id — the same rows the working day's route is drawn
+ * from, never a second copy.
+ */
+export class PrismaTripPointAccess implements TripPointAccess {
   constructor(private readonly db: DatabaseClient) {}
 
-  async appendMany(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    points: readonly AcceptedLocationPoint[];
-  }): Promise<number> {
-    const result = await this.db.tripLocationPoint.createMany({
-      data: input.points.map((point) => ({
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        timestamp: point.timestamp,
-        latitude: point.latitude.toFixed(6),
-        longitude: point.longitude.toFixed(6),
-        accuracyMeters: point.accuracyMeters ?? null,
-        speedMps: point.speedMps ?? null,
-        heading: point.heading ?? null,
-        altitude: point.altitude ?? null,
-        source: point.source ?? 'GPS',
-        isBackfilled: point.isBackfilled,
-      })),
-      skipDuplicates: true,
-    });
-    return result.count;
-  }
-
   async listForTrip(organizationId: OrganizationId, tripId: TripId) {
-    const points = await this.db.tripLocationPoint.findMany({
+    const points = await this.db.locationPoint.findMany({
       where: { organizationId, tripId },
       select: {
         timestamp: true,
@@ -231,92 +213,6 @@ export class PrismaLocationPointRepository implements LocationPointRepository {
       accuracyMeters: point.accuracyMeters === null ? null : Number(point.accuracyMeters),
       speedMps: point.speedMps === null ? null : Number(point.speedMps),
     }));
-  }
-
-  async lastPointAt(organizationId: OrganizationId, tripId: TripId): Promise<Date | null> {
-    const point = await this.db.tripLocationPoint.findFirst({
-      where: { organizationId, tripId },
-      select: { timestamp: true },
-      orderBy: { timestamp: 'desc' },
-    });
-    return point?.timestamp ?? null;
-  }
-
-  /**
-   * Retention.
-   *
-   * Deletes raw points only. Trip summaries — distance, duration, gaps — survive, so a year-old
-   * cost report still works after the coordinates behind it have been removed. That is the
-   * whole point of keeping the two retention windows separate.
-   */
-  async deleteOlderThan(organizationId: OrganizationId, cutoff: Date): Promise<number> {
-    const result = await this.db.tripLocationPoint.deleteMany({
-      where: { organizationId, timestamp: { lt: cutoff } },
-    });
-    return result.count;
-  }
-}
-
-export class PrismaTrackingEventRepository implements TrackingEventRepository {
-  constructor(private readonly db: DatabaseClient) {}
-
-  async record(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    type: TrackingEventType;
-    state: TrackingState;
-    occurredAt: Date;
-    recoveredAt?: Date | null;
-    gapSeconds?: number | null;
-    lastLatitude?: number | null;
-    lastLongitude?: number | null;
-    metadata?: Record<string, unknown>;
-  }): Promise<void> {
-    await this.db.trackingEvent.create({
-      data: {
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        type: input.type,
-        state: input.state,
-        occurredAt: input.occurredAt,
-        recoveredAt: input.recoveredAt ?? null,
-        gapSeconds: input.gapSeconds ?? null,
-        lastLatitude: input.lastLatitude?.toFixed(6) ?? null,
-        lastLongitude: input.lastLongitude?.toFixed(6) ?? null,
-        metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
-      },
-    });
-  }
-
-  async listForTrip(organizationId: OrganizationId, tripId: TripId) {
-    return this.db.trackingEvent.findMany({
-      where: { organizationId, tripId },
-      select: {
-        type: true,
-        state: true,
-        occurredAt: true,
-        recoveredAt: true,
-        gapSeconds: true,
-      },
-      orderBy: { occurredAt: 'asc' },
-    }) as Promise<
-      readonly {
-        type: TrackingEventType;
-        state: TrackingState;
-        occurredAt: Date;
-        recoveredAt: Date | null;
-        gapSeconds: number | null;
-      }[]
-    >;
-  }
-
-  async latestState(organizationId: OrganizationId, tripId: TripId): Promise<TrackingState | null> {
-    const event = await this.db.trackingEvent.findFirst({
-      where: { organizationId, tripId },
-      select: { state: true },
-      orderBy: { occurredAt: 'desc' },
-    });
-    return (event?.state as TrackingState | undefined) ?? null;
   }
 }
 
@@ -456,8 +352,7 @@ export class PrismaDriverTransactionRunner implements DriverTransactionRunner {
     return withTenant(this.prisma, organizationId, async (tx) =>
       fn({
         trips: new PrismaTripRepository(tx),
-        locations: new PrismaLocationPointRepository(tx),
-        trackingEvents: new PrismaTrackingEventRepository(tx),
+        points: new PrismaTripPointAccess(tx),
       }),
     );
   }

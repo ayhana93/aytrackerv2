@@ -1,24 +1,23 @@
 /**
- * @aytracker/module-drivers — driver portal domain: trips, GPS ingestion and tracking state.
+ * @aytracker/module-drivers — the trip lifecycle.
  *
- * Depends on @aytracker/tracking for the pure geometry and state rules, and on the fleet module
- * only through the DriverVehicleAccess port — which is why a driver's assigned vehicle can be
- * resolved without this module knowing what a vehicle table looks like.
+ * What a trip is, when one may start and end, and what its final numbers are. It does **not**
+ * own location collection: `@aytracker/module-tracking` owns the single ingestion path for the
+ * whole product, because an employee's working day needs the same admission rules and is not a
+ * trip. This module reads a trip's points back through a narrow port when it closes one.
+ *
+ * Depends on @aytracker/tracking for the pure geometry, and on the fleet module only through the
+ * DriverVehicleAccess port — which is why a driver's assigned vehicle can be resolved without
+ * this module knowing what a vehicle table looks like.
  */
 
 export {
-  MAX_LOCATION_BATCH_SIZE,
   assertNoOpenTrip,
   assertTransition,
   canTransition,
   computeTripTotals,
   isTripOpen,
-  isValidCoordinate,
-  validateLocationBatch,
-  type AcceptedLocationPoint,
-  type LocationBatchResult,
   type PauseInterval,
-  type RawLocationPoint,
   type TripState,
   type TripStatus,
   type TripTotals,
@@ -28,8 +27,7 @@ export type {
   DriverTransactionRunner,
   DriverUnitOfWork,
   DriverVehicleAccess,
-  LocationPointRepository,
-  TrackingEventRepository,
+  TripPointAccess,
   TripRepository,
 } from './domain/ports.js';
 
@@ -38,7 +36,6 @@ export { TripCommandService, assertDriverScope } from './application/trip-comman
 export {
   PrismaDriverTransactionRunner,
   PrismaDriverVehicleAccess,
-  PrismaLocationPointRepository,
-  PrismaTrackingEventRepository,
+  PrismaTripPointAccess,
   PrismaTripRepository,
 } from './infrastructure/prisma-repositories.js';

@@ -80,6 +80,9 @@ importers:
       '@aytracker/module-shifts':
         specifier: workspace:*
         version: link:../../modules/shifts
+      '@aytracker/module-tracking':
+        specifier: workspace:*
+        version: link:../../modules/tracking
       '@aytracker/module-workforce':
         specifier: workspace:*
         version: link:../../modules/workforce
@@ -337,6 +340,9 @@ importers:
       '@aytracker/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@aytracker/module-tracking':
+        specifier: workspace:*
+        version: link:../tracking
       '@aytracker/module-workforce':
         specifier: workspace:*
         version: link:../workforce
@@ -352,6 +358,25 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  modules/tracking:
+    dependencies:
+      '@aytracker/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@aytracker/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@aytracker/tracking':
+        specifier: workspace:*
+        version: link:../../packages/tracking
+      '@aytracker/types':
+        specifier: workspace:*
+        version: link:../../packages/types
     devDependencies:
       typescript:
         specifier: ^5.7.3

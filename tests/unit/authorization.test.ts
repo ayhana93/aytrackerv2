@@ -86,22 +86,58 @@ describe('system roles', () => {
   });
 
   /**
-   * The worker role must be strictly self-service. If an admin permission ever leaks into it,
-   * every worker in every tenant gains it at once — so this is asserted, not assumed.
+   * Self-service roles carry their own prefix, and one deliberately shared permission.
+   *
+   * `tracking.submit` is held by workers and drivers alike because there is one GPS stream in
+   * this product, not two: the same phone reports for the working day and, when its owner is
+   * driving, for the trip inside it. Splitting it into `worker.tracking.submit` and
+   * `driver.tracking.submit` would be two pipelines wearing a permission's clothes.
+   *
+   * The allow-list is explicit and short on purpose. What this test is really defending is that
+   * an *admin* permission can never leak into a self-service role — one that did would be
+   * granted to every worker in every tenant at once — so anything outside the role's own prefix
+   * has to be named here, in a diff someone reads.
    */
-  it('gives a worker only worker.* permissions', () => {
+  const SHARED_SELF_SERVICE: readonly string[] = [PERMISSIONS.TRACKING_SUBMIT];
+
+  it('gives a worker only worker.* permissions, plus the shared tracking one', () => {
     const workerPermissions = systemRole(SYSTEM_ROLES.WORKER).permissions;
-    expect(workerPermissions.every((permission) => permission.startsWith('worker.'))).toBe(true);
+    expect(
+      workerPermissions.every(
+        (permission) =>
+          permission.startsWith('worker.') || SHARED_SELF_SERVICE.includes(permission),
+      ),
+    ).toBe(true);
+    expect(workerPermissions).toContain(PERMISSIONS.TRACKING_SUBMIT);
     expect(workerPermissions).not.toContain(PERMISSIONS.WORKERS_READ);
     expect(workerPermissions).not.toContain(PERMISSIONS.REPORTS_READ);
     expect(workerPermissions).not.toContain(PERMISSIONS.SHIFTS_CORRECT);
   });
 
-  it('gives a driver only driver.* permissions', () => {
+  it('gives a driver only driver.* permissions, plus the shared tracking one', () => {
     const driverPermissions = systemRole(SYSTEM_ROLES.DRIVER).permissions;
-    expect(driverPermissions.every((permission) => permission.startsWith('driver.'))).toBe(true);
+    expect(
+      driverPermissions.every(
+        (permission) =>
+          permission.startsWith('driver.') || SHARED_SELF_SERVICE.includes(permission),
+      ),
+    ).toBe(true);
+    expect(driverPermissions).toContain(PERMISSIONS.TRACKING_SUBMIT);
     expect(driverPermissions).not.toContain(PERMISSIONS.FLEET_READ);
     expect(driverPermissions).not.toContain(PERMISSIONS.DRIVERS_READ);
+  });
+
+  /**
+   * The shared permission is shared *downwards*, never upwards.
+   *
+   * An admin account has no device stream and nothing to write into. A management role holding
+   * `tracking.submit` would be a management role that can post GPS as somebody.
+   */
+  it('never gives a management role the device stream', () => {
+    for (const role of SYSTEM_ROLE_DEFINITIONS) {
+      if (role.actorType !== 'USER') continue;
+      expect(role.permissions).not.toContain(PERMISSIONS.TRACKING_SUBMIT);
+    }
   });
 
   it('never assigns worker or driver roles to a user session', () => {

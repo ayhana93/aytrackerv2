@@ -12,6 +12,7 @@ import { authRoutes } from './routes/auth.js';
 import { marketRoutes } from './routes/market.js';
 import { workerRoutes } from './routes/worker.js';
 import { driverRoutes } from './routes/driver.js';
+import { trackingRoutes } from './routes/tracking.js';
 import { adminRoutes } from './routes/admin.js';
 import { healthRoutes } from './routes/health.js';
 import type { AppServices } from './services/container.js';
@@ -106,6 +107,7 @@ export async function buildApp(config: AppConfig, services: AppServices): Promis
   await app.register(marketRoutes(services), { prefix: '/api/v1/market' });
   await app.register(workerRoutes(services), { prefix: '/api/v1/worker' });
   await app.register(driverRoutes(services), { prefix: '/api/v1/driver' });
+  await app.register(trackingRoutes(services), { prefix: '/api/v1/tracking' });
   await app.register(adminRoutes(services), { prefix: '/api/v1/admin' });
 
   return app;

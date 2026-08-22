@@ -18,6 +18,10 @@ import {
   type IdempotencyStore,
 } from '@aytracker/module-shifts';
 import {
+  PrismaTrackingTransactionRunner,
+  TrackingCommandService,
+} from '@aytracker/module-tracking';
+import {
   PrismaDriverTransactionRunner,
   PrismaDriverVehicleAccess,
   TripCommandService,
@@ -59,6 +63,13 @@ export interface AppServices {
   /** The worker → driver handoff. Shares the shift transaction runner, by design. */
   readonly driving: DrivingCommandService;
   readonly trips: TripCommandService;
+  /**
+   * The one service that writes location, for both contexts.
+   *
+   * Shared by the worker and driver portals: a working day and a trip inside one are the same
+   * stream under the same rules, and giving them separate services is how the two drift apart.
+   */
+  readonly tracking: TrackingCommandService;
   readonly idempotency: IdempotencyStore;
 
   /** Seller's country of establishment. Configuration, never request data. */
@@ -91,6 +102,12 @@ export function buildServices(config: AppConfig, clock: Clock = systemClock): Ap
   // assignment and the trip have to commit together or the handoff is half-applied.
   const driving = new DrivingCommandService(shiftTransactions, workforce, events, clock);
 
+  const tracking = new TrackingCommandService(
+    new PrismaTrackingTransactionRunner(prisma),
+    events,
+    clock,
+  );
+
   const trips = new TripCommandService(
     new PrismaDriverTransactionRunner(prisma),
     new PrismaDriverVehicleAccess(prisma),
@@ -112,6 +129,7 @@ export function buildServices(config: AppConfig, clock: Clock = systemClock): Ap
     shifts,
     driving,
     trips,
+    tracking,
     idempotency: new PrismaIdempotencyStore(prisma),
     // Seller establishment. Bulgaria initially; moving it is a configuration change plus a
     // conversation with an accountant, not a code change.

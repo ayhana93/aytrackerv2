@@ -65,6 +65,10 @@ const PARTIAL_UNIQUE_INDEXES = [
   'driver_trips_one_open_per_vehicle',
   'vehicle_assignments_one_open_per_vehicle',
   'vehicle_assignments_one_open_per_driver',
+  // One phone, one stream. Two open sessions for the same person would silently split a day's
+  // distance between them.
+  'tracking_sessions_one_open_work_per_worker',
+  'tracking_sessions_one_open_trip_per_driver',
   'prices_one_active_per_market_plan_interval',
   'subscriptions_one_live_per_org',
 ] as const;
@@ -81,9 +85,18 @@ const CHECK_CONSTRAINTS = [
   'driver_trips_end_after_start',
   'driver_trips_non_negative_metrics',
   'driver_trips_odometer_forward',
-  'trip_location_points_valid_coordinates',
-  'trip_location_points_non_negative_accuracy',
+  // Renamed with the table when `trip_location_points` became `location_points`: the same rows,
+  // now owned by a tracking session rather than by a trip.
+  'location_points_valid_coordinates',
+  'location_points_non_negative_accuracy',
   'tracking_events_non_negative_gap',
+  // A session is *for* something. A row with both a worker and a trip — or with neither — is a
+  // marker the live map cannot label and a stream nobody can attribute.
+  'tracking_sessions_context_matches_subject',
+  'tracking_sessions_end_after_start',
+  'tracking_sessions_battery_is_a_fraction',
+  'driver_trips_planned_distance_positive',
+  'organization_settings_fuel_price_positive',
   'fuel_expenses_positive_liters',
   'fuel_expenses_non_negative_money',
   'fuel_expenses_currency_shape',

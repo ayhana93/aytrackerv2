@@ -250,7 +250,8 @@ model Organization {
   vehicles        Vehicle[]
   vehicleAssignments VehicleAssignment[]
   driverTrips     DriverTrip[]
-  tripLocationPoints TripLocationPoint[]
+  trackingSessions TrackingSession[]
+  locationPoints  LocationPoint[]
   trackingEvents  TrackingEvent[]
   fuelExpenses    FuelExpense[]
   vehicleExpenses VehicleExpense[]
@@ -639,6 +640,7 @@ model Worker {
   qualifications    WorkerQualification[]
   eligibilities     WorkerPositionEligibility[]
   shifts            Shift[]
+  trackingSessions  TrackingSession[]
   positionSessions  PositionSession[]
   productionEntries ProductionEntry[]
   drivers           Driver[]
@@ -813,6 +815,8 @@ model Shift {
 
   breaks            ShiftBreak[]
   positionSessions  PositionSession[]
+  /// The working day's GPS stream, when the organization tracks it. At most one per shift.
+  trackingSession   TrackingSession?
   productionEntries ProductionEntry[]
 
   @@index([organizationId, workerId, status])
@@ -987,10 +991,11 @@ model Driver {
   worker       Worker?      @relation(fields: [workerId], references: [id], onDelete: SetNull)
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  assignments  VehicleAssignment[]
-  trips        DriverTrip[]
-  fuelExpenses FuelExpense[]
-  sessions     Session[]
+  assignments      VehicleAssignment[]
+  trips            DriverTrip[]
+  trackingSessions TrackingSession[]
+  fuelExpenses     FuelExpense[]
+  sessions         Session[]
 
   @@unique([organizationId, driverCode])
   @@index([organizationId, status])
@@ -1054,11 +1059,12 @@ model Vehicle {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   site         Site?        @relation(fields: [siteId], references: [id], onDelete: SetNull)
 
-  assignments  VehicleAssignment[]
-  trips        DriverTrip[]
-  fuelExpenses FuelExpense[]
-  expenses     VehicleExpense[]
-  documents    VehicleDocument[]
+  assignments      VehicleAssignment[]
+  trips            DriverTrip[]
+  trackingSessions TrackingSession[]
+  fuelExpenses     FuelExpense[]
+  expenses         VehicleExpense[]
+  documents        VehicleDocument[]
 
   @@unique([organizationId, registrationNumber])
   @@index([organizationId, status])
@@ -1156,9 +1162,12 @@ model DriverTrip {
   vehicle      Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   positionSession PositionSession? @relation(fields: [positionSessionId], references: [id], onDelete: SetNull)
 
-  locationPoints TripLocationPoint[]
-  trackingEvents TrackingEvent[]
-  fuelExpenses   FuelExpense[]
+  /// Points recorded while this trip was running. The same rows also belong to the working
+  /// day's session — one stream, two attributions.
+  locationPoints  LocationPoint[]
+  trackingEvents  TrackingEvent[]
+  trackingSession TrackingSession?
+  fuelExpenses    FuelExpense[]
 
   @@index([organizationId, driverId, startedAt])
   @@index([organizationId, vehicleId, startedAt])
@@ -1170,33 +1179,135 @@ model DriverTrip {
   @@map("driver_trips")
 }
 
-/// Raw GPS samples. High-volume, short-retention table — see docs/tracking.md.
-/// Coordinates are stored at 6 decimal places (~0.11 m); no more precision is retained.
-model TripLocationPoint {
-  id             String   @id @default(uuid(7))
+/// What a stream of location points is being recorded *for*.
+///
+/// There is one GPS engine and two contexts, never two engines. A phone reports its position
+/// once; where that position is attributed depends on what the person is doing at the time.
+enum TrackingContext {
+  /// The employee's working day. Opens with the shift, closes with it.
+  WORK
+  /// A vehicle under a driver. Opens with the trip, closes with it. On a worker who drives,
+  /// this runs *inside* an open WORK session rather than replacing it.
+  DRIVER_TRIP
+}
+
+/// A period during which a device is authorised to report location, and the live state of that
+/// reporting.
+///
+/// This is the row the admin live map reads: one per person or vehicle currently being tracked,
+/// carrying the last fix and the derived tracking state. Raw points hang off it.
+///
+/// Two contexts, one table, because they differ in what they are attributed to and in nothing
+/// else — the sampling policy, the admission rules, the distance arithmetic and the state
+/// machine are identical. Splitting them would be the "second GPS pipeline" that makes the two
+/// halves disagree six months later.
+///
+/// **Privacy is structural here.** A point cannot be stored without an open session, and a
+/// session exists only while a shift or a trip does. There is no row this schema can hold that
+/// represents location collected outside working time.
+model TrackingSession {
+  id             String          @id @default(uuid(7))
   organizationId String
-  tripId         String
-  /// Device-reported capture time. Trusted only for ordering within a trip, and clamped to the
-  /// trip window on ingestion.
-  timestamp      DateTime @db.Timestamptz(6)
-  latitude       Decimal  @db.Decimal(9, 6)
-  longitude      Decimal  @db.Decimal(9, 6)
-  accuracyMeters Decimal? @db.Decimal(8, 2)
-  speedMps       Decimal? @db.Decimal(8, 3)
-  heading        Decimal? @db.Decimal(6, 2)
-  altitude       Decimal? @db.Decimal(8, 2)
-  /// GPS | NETWORK | FUSED | MANUAL | IMPORTED
-  source         String   @default("GPS")
-  /// True when the point arrived after an offline period and was replayed from the device queue.
-  isBackfilled   Boolean  @default(false)
-  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  context        TrackingContext
+
+  /// Set on a WORK session. The employee whose day this is.
+  workerId String?
+  /// Set on a DRIVER_TRIP session, and on a WORK session belonging to someone who drives.
+  driverId String?
+  /// The shift a WORK session records. One session per shift.
+  shiftId  String?         @unique
+  /// The trip a DRIVER_TRIP session records. One session per trip.
+  tripId   String?         @unique
+  /// The vehicle involved, when there is one. Denormalised from the trip/assignment so the live
+  /// map can label a marker without a join per marker.
+  vehicleId String?
+
+  startedAt DateTime  @db.Timestamptz(6)
+  endedAt   DateTime? @db.Timestamptz(6)
+
+  /// Server-computed from the stored points, never accepted from a device.
+  distanceMeters   Int @default(0)
+  /// Seconds the session was open with nothing arriving.
+  untrackedSeconds Int @default(0)
+
+  /// Latest derived state — ACTIVE | DEGRADED | INTERRUPTED | OFFLINE | STOPPED. Mirrors the
+  /// most recent TrackingEvent, kept here so the live map is one indexed read.
+  trackingState      String    @default("STOPPED")
+  lastPointAt        DateTime? @db.Timestamptz(6)
+  lastLatitude       Decimal?  @db.Decimal(9, 6)
+  lastLongitude      Decimal?  @db.Decimal(9, 6)
+  lastSpeedMps       Decimal?  @db.Decimal(8, 3)
+  lastAccuracyMeters Decimal?  @db.Decimal(8, 2)
+
+  /// Device telemetry, recorded only because it changes what the system should do: a phone
+  /// under 15% is sampled less often, and a revoked permission explains silence that would
+  /// otherwise look like a driver hiding.
+  batteryLevel     Decimal? @db.Decimal(4, 3)
+  isCharging       Boolean?
+  /// granted | denied | prompt | unknown — what the device last reported about itself.
+  devicePermission String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  trip         DriverTrip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  worker       Worker?      @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  driver       Driver?      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  shift        Shift?       @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  trip         DriverTrip?  @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  vehicle      Vehicle?     @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
 
+  points         LocationPoint[]
+  trackingEvents TrackingEvent[]
+
+  @@index([organizationId, context, endedAt])
+  @@index([organizationId, workerId, startedAt])
+  @@index([organizationId, driverId, startedAt])
+  /// The live map's query: every open session in this organization.
+  @@index([organizationId, endedAt, lastPointAt])
+  /// Referenced as a pair by every child row, so a cross-tenant reference cannot be
+  /// inserted. See docs/multi-tenancy.md.
+  @@unique([organizationId, id], map: "tracking_sessions_tenant_key")
+  @@map("tracking_sessions")
+}
+
+/// Raw GPS samples. High-volume, short-retention table — see docs/tracking.md.
+/// Coordinates are stored at 6 decimal places (~0.11 m); no more precision is retained.
+///
+/// Every point belongs to exactly one TrackingSession — that is what makes "no collection
+/// outside an authorised session" a schema property rather than a promise. `tripId` is an
+/// *overlay*, not a second owner: a point recorded while the employee happened to be driving
+/// carries the trip as well, so one physical stream produces both the working day's route and
+/// the trip's, with no row stored twice.
+model LocationPoint {
+  id                String   @id @default(uuid(7))
+  organizationId    String
+  trackingSessionId String
+  /// Set when this fix happened during a driver trip. Null for ordinary working time.
+  tripId            String?
+  /// Device-reported capture time. Trusted only for ordering within a session, and clamped to
+  /// the session window on ingestion.
+  timestamp         DateTime @db.Timestamptz(6)
+  latitude          Decimal  @db.Decimal(9, 6)
+  longitude         Decimal  @db.Decimal(9, 6)
+  accuracyMeters    Decimal? @db.Decimal(8, 2)
+  speedMps          Decimal? @db.Decimal(8, 3)
+  heading           Decimal? @db.Decimal(6, 2)
+  altitude          Decimal? @db.Decimal(8, 2)
+  /// GPS | NETWORK | FUSED | MANUAL | IMPORTED
+  source            String   @default("GPS")
+  /// True when the point arrived after an offline period and was replayed from the device queue.
+  isBackfilled      Boolean  @default(false)
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trackingSession TrackingSession @relation(fields: [trackingSessionId], references: [id], onDelete: Cascade)
+  trip            DriverTrip?     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, trackingSessionId, timestamp])
   @@index([organizationId, tripId, timestamp])
   @@index([organizationId, timestamp])
-  @@map("trip_location_points")
+  @@map("location_points")
 }
 
 /// Neutral, factual records of tracking transitions. Wording never asserts intent — see
@@ -1214,11 +1325,17 @@ enum TrackingEventType {
   REPORTING_RECOVERED
 }
 
+/// A neutral, factual record of a tracking transition, on either context.
+///
+/// Owned by the session, because a working day has interruptions whether or not anyone is
+/// driving. `tripId` is carried when the transition happened during a trip, so a trip's own
+/// event list is still one indexed read.
 model TrackingEvent {
-  id             String            @id @default(uuid(7))
-  organizationId String
-  tripId         String
-  type           TrackingEventType
+  id                String            @id @default(uuid(7))
+  organizationId    String
+  trackingSessionId String
+  tripId            String?
+  type              TrackingEventType
   /// State the trip entered as a result of this event.
   state          String
   occurredAt     DateTime          @db.Timestamptz(6)
@@ -1231,9 +1348,11 @@ model TrackingEvent {
   metadata       Json              @default("{}")
   createdAt      DateTime          @default(now()) @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  trip         DriverTrip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trackingSession TrackingSession @relation(fields: [trackingSessionId], references: [id], onDelete: Cascade)
+  trip            DriverTrip?     @relation(fields: [tripId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId, trackingSessionId, occurredAt])
   @@index([organizationId, tripId, occurredAt])
   @@index([organizationId, type, occurredAt])
   @@map("tracking_events")

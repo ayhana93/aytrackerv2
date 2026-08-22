@@ -73,6 +73,14 @@ export const PERMISSIONS = {
   DRIVER_TRIP_START: 'driver.trip.start',
   DRIVER_TRIP_STOP: 'driver.trip.stop',
   DRIVER_LOCATION_SUBMIT: 'driver.location.submit',
+  /**
+   * Reporting location into an open tracking session.
+   *
+   * Held by workers *and* drivers, because Option C is one stream: the same phone reports for
+   * the working day and, when its owner is driving, for the trip inside it. Separate permissions
+   * per context would have been separate pipelines wearing a permission's clothes.
+   */
+  TRACKING_SUBMIT: 'tracking.submit',
   DRIVER_TRIP_HISTORY: 'driver.trip.history',
   DRIVER_VEHICLE_VIEW: 'driver.vehicle.view',
 

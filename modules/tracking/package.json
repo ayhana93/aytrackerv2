@@ -1,5 +1,5 @@
 {
-  "name": "@aytracker/module-shifts",
+  "name": "@aytracker/module-tracking",
   "version": "2.3.0",
   "private": true,
   "type": "module",
@@ -20,12 +20,8 @@
   "dependencies": {
     "@aytracker/database": "workspace:*",
     "@aytracker/domain": "workspace:*",
-    "@aytracker/module-tracking": "workspace:*",
-    "@aytracker/module-workforce": "workspace:*",
     "@aytracker/tracking": "workspace:*",
-    "@aytracker/types": "workspace:*",
-    "@aytracker/validation": "workspace:*",
-    "zod": "^3.24.1"
+    "@aytracker/types": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

@@ -6,20 +6,11 @@ import {
   type EventBus,
 } from '@aytracker/domain';
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
-import {
-  computeTrackDistance,
-  deriveTrackingState,
-  eventForTransition,
-  findTrackingGaps,
-  totalGapSeconds,
-  type TrackingState,
-} from '@aytracker/tracking';
+import { computeTrackDistance, findTrackingGaps, totalGapSeconds } from '@aytracker/tracking';
 import {
   assertNoOpenTrip,
   assertTransition,
   computeTripTotals,
-  validateLocationBatch,
-  type RawLocationPoint,
   type TripState,
 } from '../domain/trip.js';
 import type {
@@ -129,16 +120,14 @@ export class TripCommandService {
         startOdometer: input.startOdometer,
       });
 
-      await uow.trackingEvents.record({
-        organizationId: input.organizationId,
-        tripId: trip.id,
-        type: 'TRACKING_STARTED',
-        state: 'ACTIVE',
-        occurredAt: input.at,
-        lastLatitude: input.startLatitude,
-        lastLongitude: input.startLongitude,
-      });
-
+      /*
+       * No TRACKING_STARTED here.
+       *
+       * Starting a trip is not the start of tracking. For a worker who is already on shift the
+       * stream has been running since they clocked in, and announcing a start would put a
+       * spurious transition in the middle of their day. `TrackingCommandService.attachTrip`
+       * records one only when the trip genuinely opens a session of its own.
+       */
       return { tripId: trip.id };
     });
 
@@ -196,7 +185,7 @@ export class TripCommandService {
         throw new PreconditionFailedError('trip.not_started', 'This trip has no start time.');
       }
 
-      const points = await uow.locations.listForTrip(input.organizationId, input.tripId);
+      const points = await uow.points.listForTrip(input.organizationId, input.tripId);
       const pauses = await uow.trips.listPauses(input.organizationId, input.tripId);
 
       const distance = computeTrackDistance(points);
@@ -228,16 +217,9 @@ export class TripCommandService {
         untrackedSeconds: totals.untrackedSeconds,
       });
 
-      await uow.trackingEvents.record({
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        type: 'TRACKING_STOPPED',
-        state: 'STOPPED',
-        occurredAt: input.at,
-        lastLatitude: input.endLatitude,
-        lastLongitude: input.endLongitude,
-      });
-
+      // Likewise no TRACKING_STOPPED: an employee whose trip ended is still at work and still
+      // reporting. `detachTrip` closes the session, and records the stop, only when the trip
+      // owned one.
       return {
         distanceMeters: distance.distanceMeters,
         durationSeconds: totals.durationSeconds,
@@ -277,142 +259,15 @@ export class TripCommandService {
     };
   }
 
-  /**
-   * Ingests a batch of location points.
+  /*
+   * There is no `ingestLocations` here any more, and no interruption sweep.
    *
-   * This is the highest-frequency write path in the system, so it does the minimum:
-   * validate → append → update the running distance and tracking state. Route reconstruction,
-   * stop detection and gap analysis are read-side concerns and stay out of the hot path.
-   *
-   * A tracking-state transition (say, ACTIVE → INTERRUPTED → ACTIVE) writes one neutral event
-   * describing what was observed. It never records a conclusion about why.
+   * Both moved to `@aytracker/module-tracking`, which owns the single ingestion path for the
+   * whole product. A trip is a thing that happens *inside* a tracking session; it is not itself
+   * a reason to collect location. Keeping a second copy here is how the worker stream and the
+   * driver stream would end up with two sets of admission rules and two distance calculations
+   * that disagree — see docs/workforce-tracking.md.
    */
-  async ingestLocations(input: {
-    organizationId: OrganizationId;
-    driverId: DriverId;
-    tripId: TripId;
-    points: readonly RawLocationPoint[];
-    deviceReported: 'ONLINE' | 'OFFLINE' | 'PERMISSION_DENIED' | null;
-    now: Date;
-    backfillThresholdSeconds?: number;
-  }): Promise<{ accepted: number; rejected: number; clamped: number; state: TrackingState }> {
-    return this.transactions.run(input.organizationId, async (uow) => {
-      const trip = await this.requireOwnTrip(
-        uow,
-        input.organizationId,
-        input.driverId,
-        input.tripId,
-      );
-
-      const batch = validateLocationBatch({
-        trip,
-        points: input.points,
-        now: input.now,
-        backfillThresholdSeconds: input.backfillThresholdSeconds ?? 120,
-      });
-
-      if (batch.accepted.length > 0) {
-        await uow.locations.appendMany({
-          organizationId: input.organizationId,
-          tripId: input.tripId,
-          points: batch.accepted,
-        });
-      }
-
-      const allPoints = await uow.locations.listForTrip(input.organizationId, input.tripId);
-      const distance = computeTrackDistance(allPoints);
-      const lastPointAt = allPoints.at(-1)?.timestamp ?? null;
-      const lastAccuracy = allPoints.at(-1)?.accuracyMeters ?? null;
-
-      const previousState =
-        (await uow.trackingEvents.latestState(input.organizationId, input.tripId)) ?? 'STOPPED';
-      const state = deriveTrackingState({
-        tripStatus: trip.status,
-        lastPointAt,
-        lastPointAccuracyMeters: lastAccuracy,
-        deviceReported: input.deviceReported,
-        now: input.now,
-      });
-
-      const transitionEvent = eventForTransition(previousState, state);
-      if (transitionEvent) {
-        await uow.trackingEvents.record({
-          organizationId: input.organizationId,
-          tripId: input.tripId,
-          type: transitionEvent,
-          state,
-          occurredAt: input.now,
-          lastLatitude: allPoints.at(-1)?.latitude ?? null,
-          lastLongitude: allPoints.at(-1)?.longitude ?? null,
-          metadata: { previousState, deviceReported: input.deviceReported },
-        });
-      }
-
-      if (lastPointAt) {
-        await uow.trips.updateLiveMetrics({
-          organizationId: input.organizationId,
-          tripId: input.tripId,
-          distanceMeters: distance.distanceMeters,
-          lastPointAt,
-          trackingState: state,
-        });
-      }
-
-      return {
-        accepted: batch.accepted.length,
-        rejected: batch.rejected,
-        clamped: batch.clamped,
-        state,
-      };
-    });
-  }
-
-  /**
-   * Sweeps active trips and records an interruption event for any that have gone quiet.
-   *
-   * Run on a schedule. Without it, a trip whose device died would sit at ACTIVE forever, and
-   * the admin dashboard would show a driver as tracked when nothing is arriving.
-   */
-  async detectInterruptions(input: {
-    organizationId: OrganizationId;
-  }): Promise<{ interrupted: number }> {
-    const now = this.clock.now();
-    return this.transactions.run(input.organizationId, async (uow) => {
-      const active = await uow.trips.listActive(input.organizationId);
-      let interrupted = 0;
-
-      for (const trip of active) {
-        const lastPointAt = await uow.locations.lastPointAt(input.organizationId, trip.id);
-        const previousState =
-          (await uow.trackingEvents.latestState(input.organizationId, trip.id)) ?? 'STOPPED';
-        const state = deriveTrackingState({
-          tripStatus: trip.status,
-          lastPointAt,
-          lastPointAccuracyMeters: null,
-          deviceReported: null,
-          now,
-        });
-
-        const transitionEvent = eventForTransition(previousState, state);
-        if (!transitionEvent) continue;
-
-        await uow.trackingEvents.record({
-          organizationId: input.organizationId,
-          tripId: trip.id,
-          type: transitionEvent,
-          state,
-          occurredAt: lastPointAt ?? trip.startedAt ?? now,
-          gapSeconds: lastPointAt
-            ? Math.round((now.getTime() - lastPointAt.getTime()) / 1000)
-            : null,
-          metadata: { previousState, detectedBy: 'sweep' },
-        });
-        if (state === 'INTERRUPTED') interrupted += 1;
-      }
-
-      return { interrupted };
-    });
-  }
 
   /**
    * Loads a trip and proves it belongs to this driver.

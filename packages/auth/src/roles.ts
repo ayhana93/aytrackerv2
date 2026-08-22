@@ -93,6 +93,8 @@ const WORKER_PERMISSIONS: Permission[] = [
   P.WORKER_POSITION_CHANGE,
   P.WORKER_PRODUCTION_RECORD,
   P.WORKER_HISTORY_READ,
+  // The working day's GPS stream. Opens with the shift, closes with it.
+  P.TRACKING_SUBMIT,
 ];
 
 const DRIVER_PERMISSIONS: Permission[] = [
@@ -102,6 +104,7 @@ const DRIVER_PERMISSIONS: Permission[] = [
   P.DRIVER_LOCATION_SUBMIT,
   P.DRIVER_TRIP_HISTORY,
   P.DRIVER_VEHICLE_VIEW,
+  P.TRACKING_SUBMIT,
 ];
 
 export interface SystemRoleDefinition {

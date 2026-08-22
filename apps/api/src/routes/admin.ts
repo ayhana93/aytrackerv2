@@ -774,7 +774,8 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         });
         if (!trip) throw new NotFoundError('trip.not_found', 'Trip not found.');
 
-        const rows = await services.prisma.tripLocationPoint.findMany({
+        // The trip's own points, read through the trip overlay on the shared table.
+        const rows = await services.prisma.locationPoint.findMany({
           where: { organizationId: actor.organizationId, tripId: trip.id },
           select: {
             timestamp: true,
@@ -1139,6 +1140,268 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         loginMessage: organization.branding?.loginMessage ?? null,
         customDomain: organization.branding?.customDomain ?? null,
         logoUrl: organization.branding?.logoUrl ?? null,
+      };
+    });
+
+    /* ------------------------------------------------------------------- live */
+
+    /**
+     * Everyone and everything currently being tracked, in one query.
+     *
+     * The live map's only read. It goes to `tracking_sessions` rather than assembling employees
+     * and vehicles separately, because a session is already the answer to "who is reporting right
+     * now" — one indexed row per marker, carrying the last fix and the derived state.
+     *
+     * Every figure here is the server's. The browser places markers; it never computes a
+     * distance, a speed or a staleness.
+     */
+    app.get('/live', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
+      const now = services.clock.now();
+
+      const sessions = await services.prisma.trackingSession.findMany({
+        where: { organizationId: actor.organizationId, endedAt: null },
+        select: {
+          id: true,
+          context: true,
+          startedAt: true,
+          distanceMeters: true,
+          trackingState: true,
+          lastPointAt: true,
+          lastLatitude: true,
+          lastLongitude: true,
+          lastSpeedMps: true,
+          lastAccuracyMeters: true,
+          batteryLevel: true,
+          devicePermission: true,
+          worker: { select: { id: true, firstName: true, lastName: true, employeeNumber: true } },
+          driver: { select: { id: true, driverCode: true } },
+          vehicle: { select: { id: true, registrationNumber: true, make: true, model: true } },
+          shift: {
+            select: {
+              status: true,
+              positionSessions: {
+                where: { endedAt: null },
+                select: { position: { select: { name: true } } },
+                take: 1,
+              },
+            },
+          },
+          trip: {
+            select: {
+              id: true,
+              label: true,
+              startedAt: true,
+              distanceMeters: true,
+              vehicle: { select: { registrationNumber: true, make: true, model: true } },
+            },
+          },
+        },
+        orderBy: { startedAt: 'asc' },
+        take: 500,
+      });
+
+      /**
+       * A worker who is driving produces one session, not two.
+       *
+       * The trip is folded into the same row, so the map shows one marker for one person and can
+       * label it with the vehicle they are in. Two markers for one phone would be the clearest
+       * possible symptom of the duplicate pipeline this design avoids.
+       */
+      return {
+        serverTime: now.toISOString(),
+        subjects: sessions.map((session) => {
+          const vehicle = session.trip?.vehicle ?? session.vehicle ?? null;
+          const secondsSinceFix = session.lastPointAt
+            ? Math.max(0, Math.round((now.getTime() - session.lastPointAt.getTime()) / 1000))
+            : null;
+
+          return {
+            id: session.id,
+            context: session.context,
+            name: session.worker
+              ? `${session.worker.firstName} ${session.worker.lastName}`
+              : (session.driver?.driverCode ?? 'Шофьор'),
+            employeeNumber: session.worker?.employeeNumber ?? null,
+            /** Where they are standing, when they are not in a vehicle. */
+            position: session.shift?.positionSessions[0]?.position.name ?? null,
+            onBreak: session.shift?.status === 'ON_BREAK',
+            startedAt: session.startedAt.toISOString(),
+            distanceMeters: session.distanceMeters,
+            /**
+             * The state as the server observes it, never as an accusation. A silent phone is
+             * INTERRUPTED — which covers a tunnel, a flat battery and a force-quit equally,
+             * because from here they are the same thing.
+             */
+            trackingState: session.trackingState,
+            lastPointAt: session.lastPointAt?.toISOString() ?? null,
+            secondsSinceFix,
+            latitude: session.lastLatitude === null ? null : Number(session.lastLatitude),
+            longitude: session.lastLongitude === null ? null : Number(session.lastLongitude),
+            speedKph:
+              session.lastSpeedMps === null ? null : Math.round(Number(session.lastSpeedMps) * 3.6),
+            accuracyMeters:
+              session.lastAccuracyMeters === null ? null : Number(session.lastAccuracyMeters),
+            batteryLevel: session.batteryLevel === null ? null : Number(session.batteryLevel),
+            devicePermission: session.devicePermission,
+            vehicle: vehicle
+              ? {
+                  registrationNumber: vehicle.registrationNumber,
+                  make: vehicle.make,
+                  model: vehicle.model,
+                }
+              : null,
+            trip: session.trip
+              ? {
+                  id: session.trip.id,
+                  label: session.trip.label,
+                  startedAt: session.trip.startedAt?.toISOString() ?? null,
+                  distanceMeters: session.trip.distanceMeters,
+                }
+              : null,
+            /**
+             * Whether the position on the map is the *vehicle's* or merely the phone's.
+             *
+             * A phone in a driver's pocket is not the van. Saying which is which is the
+             * difference between a fact and an assumption somebody will act on.
+             */
+            positionSource: 'DEVICE' as const,
+          };
+        }),
+      };
+    });
+
+    /**
+     * One employee's working day, on a map.
+     *
+     * The working route and the trips inside it, from one stream of points. `tripId` on each
+     * point is what separates the segments — so a day reads as WORK → DRIVER_TRIP → WORK without
+     * anything being recorded twice.
+     *
+     * Gaps are returned explicitly and the renderer breaks the line at them. There is no version
+     * of this data where a straight line is drawn across nineteen minutes nobody can account for.
+     */
+    app.get('/live/:sessionId/track', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
+      const { sessionId } = request.params as { sessionId: string };
+      const now = services.clock.now();
+
+      const session = await services.prisma.trackingSession.findFirst({
+        where: { id: sessionId, organizationId: actor.organizationId },
+        select: {
+          id: true,
+          context: true,
+          startedAt: true,
+          endedAt: true,
+          distanceMeters: true,
+          untrackedSeconds: true,
+          worker: { select: { firstName: true, lastName: true } },
+        },
+      });
+      if (!session) {
+        throw new NotFoundError('tracking.session_not_found', 'Tracking session not found.');
+      }
+
+      const rows = await services.prisma.locationPoint.findMany({
+        where: { organizationId: actor.organizationId, trackingSessionId: session.id },
+        select: {
+          timestamp: true,
+          latitude: true,
+          longitude: true,
+          accuracyMeters: true,
+          speedMps: true,
+          tripId: true,
+        },
+        orderBy: { timestamp: 'asc' },
+      });
+
+      const points = rows.map((row) => ({
+        timestamp: row.timestamp,
+        latitude: Number(row.latitude),
+        longitude: Number(row.longitude),
+        accuracyMeters: row.accuracyMeters === null ? null : Number(row.accuracyMeters),
+        speedMps: row.speedMps === null ? null : Number(row.speedMps),
+        tripId: row.tripId,
+      }));
+
+      const track = await new HaversineRoutingProvider().reconstruct(points);
+      const gaps = findTrackingGaps({
+        pointTimestamps: points.map((point) => point.timestamp),
+        tripStartedAt: session.startedAt,
+        tripEndedAt: session.endedAt,
+        now,
+      });
+      const stops = detectStops(points, {
+        ...DEFAULT_STOP_OPTIONS,
+        minDurationSeconds: MIN_STOP_SECONDS,
+      });
+
+      /**
+       * The day, split into the segments a person would describe it in.
+       *
+       * Consecutive points sharing a trip id are one DRIVER_TRIP segment; the rest is WORK. This
+       * is derived rather than stored, because the points already say it and a second
+       * representation would be a second thing to keep true.
+       */
+      const segments: {
+        context: 'WORK' | 'DRIVER_TRIP';
+        tripId: string | null;
+        from: string;
+        to: string;
+        pointCount: number;
+      }[] = [];
+      for (const point of points) {
+        const last = segments.at(-1);
+        if (last && last.tripId === point.tripId) {
+          last.to = point.timestamp.toISOString();
+          last.pointCount += 1;
+          continue;
+        }
+        segments.push({
+          context: point.tripId ? 'DRIVER_TRIP' : 'WORK',
+          tripId: point.tripId,
+          from: point.timestamp.toISOString(),
+          to: point.timestamp.toISOString(),
+          pointCount: 1,
+        });
+      }
+
+      return {
+        session: {
+          id: session.id,
+          context: session.context,
+          worker: session.worker ? `${session.worker.firstName} ${session.worker.lastName}` : null,
+          startedAt: session.startedAt.toISOString(),
+          endedAt: session.endedAt?.toISOString() ?? null,
+          distanceMeters: session.distanceMeters,
+          untrackedSeconds: session.untrackedSeconds,
+        },
+        track: {
+          points: track.points.map((point) => ({
+            latitude: point.latitude,
+            longitude: point.longitude,
+          })),
+          distanceMeters: track.distanceMeters,
+          /** Draw a break after each of these indices. Never a straight line across. */
+          gapAfterIndices: track.gapAfterIndices,
+          pointCount: track.points.length,
+        },
+        segments,
+        stops: stops.map((stop) => ({
+          latitude: stop.center.latitude,
+          longitude: stop.center.longitude,
+          startedAt: stop.startedAt.toISOString(),
+          endedAt: stop.endedAt.toISOString(),
+          seconds: stop.durationSeconds,
+        })),
+        gaps: gaps.map((gap) => ({
+          startedAt: gap.startedAt.toISOString(),
+          endedAt: gap.endedAt?.toISOString() ?? null,
+          seconds: gap.seconds,
+          isOpen: gap.endedAt === null,
+        })),
       };
     });
 

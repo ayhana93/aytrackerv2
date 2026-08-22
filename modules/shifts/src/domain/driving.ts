@@ -188,6 +188,15 @@ export const DRIVING_SESSION_PERMISSIONS: readonly string[] = [
   'driver.trip.start',
   'driver.trip.stop',
   'driver.location.submit',
+  /*
+   * `tracking.submit` is deliberately NOT in this list.
+   *
+   * The list is symmetric: whatever elevation adds, leaving the driving position removes. A
+   * worker already holds `tracking.submit` from their own role — it is what lets their working
+   * day be recorded at all — so adding it here would mean stripping it the moment they parked,
+   * and the rest of their shift would go untracked. A driver-only session gets it from the
+   * driver role instead.
+   */
   'driver.trip.history',
   'driver.vehicle.view',
 ];

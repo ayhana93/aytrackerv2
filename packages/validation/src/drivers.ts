@@ -85,6 +85,30 @@ export const locationPointSchema = z.object({
  * never as proof of intent — "permission not granted" is a fact about the device, not an
  * accusation about the driver.
  */
+/**
+ * A batch from a device, for either context.
+ *
+ * There is no session id and no trip id: the server resolves both from the authenticated actor
+ * and from each point's timestamp. A client naming its own session would be a client choosing
+ * where its data lands.
+ *
+ * The telemetry fields are here because they change what the system does — battery decides the
+ * sampling interval, and a reported permission state explains silence that would otherwise look
+ * like a driver hiding. Nothing is collected merely because a phone exposes it.
+ */
+export const submitTrackingPointsSchema = z.object({
+  clientActionId: clientActionIdSchema,
+  points: z.array(locationPointSchema).min(1).max(500),
+  deviceReported: z.enum(['ONLINE', 'OFFLINE', 'PERMISSION_DENIED']).nullable().default(null),
+  batteryLevel: z.number().min(0).max(1).nullable().default(null),
+  isCharging: z.boolean().nullable().default(null),
+  permission: z.enum(['granted', 'denied', 'prompt', 'unknown']).nullable().default(null),
+});
+
+export type SubmitTrackingPointsRequest = z.infer<typeof submitTrackingPointsSchema>;
+
+/** @deprecated The trip-scoped shape. `/driver/location` still accepts it; new clients post to
+ * `/tracking/points`, which needs neither a trip nor a session. */
 export const submitLocationsSchema = z.object({
   clientActionId: clientActionIdSchema,
   tripId: uuidSchema,

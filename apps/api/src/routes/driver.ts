@@ -4,8 +4,16 @@ import { FEATURES } from '@aytracker/billing';
 import { hashRequestBody } from '@aytracker/module-shifts';
 import { endTripSchema, startTripSchema, submitLocationsSchema } from '@aytracker/validation';
 import { DEFAULT_SAMPLING_POLICY, estimateFuel } from '@aytracker/tracking';
-import type { ClientActionId, CurrencyCode, DriverId, TripId, VehicleId } from '@aytracker/types';
-import { NotFoundError } from '@aytracker/domain';
+import type {
+  ClientActionId,
+  CurrencyCode,
+  DriverId,
+  TripId,
+  VehicleId,
+  WorkerId,
+} from '@aytracker/types';
+import { ForbiddenError, NotFoundError } from '@aytracker/domain';
+import type { TrackingSessionId } from '@aytracker/module-tracking';
 import type { AppServices } from '../services/container.js';
 
 /**
@@ -350,8 +358,9 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
         body.clientActionId as ClientActionId,
         'driver.trip.start',
         request.body,
-        () =>
-          services.trips.startTrip({
+        async () => {
+          const at = body.occurredAt ?? services.clock.now();
+          const started = await services.trips.startTrip({
             organizationId: actor.organizationId,
             driverId: actor.driverId as DriverId,
             label: body.label,
@@ -363,8 +372,32 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
             startLatitude: body.startLatitude,
             startLongitude: body.startLongitude,
             startOdometer: body.startOdometer,
-            at: body.occurredAt ?? services.clock.now(),
-          }),
+            at,
+          });
+
+          /**
+           * Does this trip need a session of its own?
+           *
+           * Only if nobody is already tracking this person. A driver who is also on shift keeps
+           * the working day's stream and the trip rides inside it; a driver who signed in at the
+           * driver door gets a DRIVER_TRIP session, because otherwise nothing would authorise
+           * their phone to report at all.
+           */
+          const driver = await services.prisma.driver.findFirst({
+            where: { id: actor.driverId!, organizationId: actor.organizationId },
+            select: { workerId: true },
+          });
+          const session = await services.tracking.attachTrip({
+            organizationId: actor.organizationId,
+            driverId: actor.driverId as DriverId,
+            workerId: (driver?.workerId as WorkerId | null) ?? null,
+            tripId: started.tripId,
+            vehicleId: started.vehicleId as VehicleId,
+            at,
+          });
+
+          return { ...started, trackingSessionId: session.id, trackingContext: session.context };
+        },
       );
     });
 
@@ -389,16 +422,33 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
         body.clientActionId as ClientActionId,
         'driver.trip.end',
         request.body,
-        () =>
-          services.trips.endTrip({
+        async () => {
+          const at = body.occurredAt ?? services.clock.now();
+          const summary = await services.trips.endTrip({
             organizationId: actor.organizationId,
             driverId: actor.driverId as DriverId,
             tripId: tripId as TripId,
             endLatitude: body.endLatitude,
             endLongitude: body.endLongitude,
             endOdometer: body.endOdometer,
-            at: body.occurredAt ?? services.clock.now(),
-          }),
+            at,
+          });
+
+          /**
+           * Ends the session only if the trip owned one.
+           *
+           * A worker whose trip has finished is still at work, and their day keeps recording
+           * until they clock out. That is the behaviour Option C exists for, and closing the
+           * session here would be the bug it exists to prevent.
+           */
+          const { closedSession } = await services.tracking.detachTrip({
+            organizationId: actor.organizationId,
+            tripId: tripId as TripId,
+            at,
+          });
+
+          return { ...summary, trackingStopped: closedSession };
+        },
       );
     });
 
@@ -421,12 +471,49 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
         assertPermission(actor, PERMISSIONS.DRIVER_LOCATION_SUBMIT);
         const body = submitLocationsSchema.parse(request.body);
 
-        return services.trips.ingestLocations({
+        /**
+         * Resolved from the trip, not trusted from the body.
+         *
+         * The session that owns a trip's points may be the trip's own or the working day it
+         * runs inside — `attachTrip` decided that when the trip started. Either way the client
+         * does not get to say, and a trip belonging to another driver is simply not found.
+         */
+        const trip = await services.prisma.driverTrip.findFirst({
+          where: {
+            id: body.tripId,
+            organizationId: actor.organizationId,
+            driverId: actor.driverId!,
+          },
+          select: { id: true, driverId: true, driver: { select: { workerId: true } } },
+        });
+        if (!trip) throw new NotFoundError('trip.not_found', 'Trip not found.');
+
+        const session = await services.prisma.trackingSession.findFirst({
+          where: {
+            organizationId: actor.organizationId,
+            endedAt: null,
+            OR: [
+              { context: 'DRIVER_TRIP', tripId: trip.id },
+              ...(trip.driver.workerId
+                ? [{ context: 'WORK' as const, workerId: trip.driver.workerId }]
+                : []),
+            ],
+          },
+          select: { id: true },
+        });
+        if (!session) {
+          throw new ForbiddenError(
+            'tracking.no_open_session',
+            'Location is only recorded during an open shift or trip.',
+          );
+        }
+
+        return services.tracking.ingest({
           organizationId: actor.organizationId,
-          driverId: actor.driverId as DriverId,
-          tripId: body.tripId as TripId,
+          sessionId: session.id as TrackingSessionId,
           points: body.points,
           deviceReported: body.deviceReported,
+          telemetry: { batteryLevel: body.batteryLevel },
           now: services.clock.now(),
         });
       },

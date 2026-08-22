@@ -14,6 +14,7 @@ import {
 import { withDrivingPermissions, withoutDrivingPermissions } from '@aytracker/module-shifts';
 import type {
   ClientActionId,
+  DriverId,
   PositionId,
   ShiftTypeId,
   SiteId,
@@ -317,9 +318,17 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
             }),
             services.prisma.worker.findFirst({
               where: { id: actor.workerId!, organizationId: actor.organizationId },
-              select: { siteId: true },
+              select: {
+                siteId: true,
+                drivers: {
+                  where: { deletedAt: null, status: 'ACTIVE' },
+                  select: { id: true },
+                  take: 1,
+                },
+              },
             }),
           ]);
+          const driver = worker?.drivers[0] ?? null;
 
           /**
            * The site comes from the worker unless a terminal named one.
@@ -336,14 +345,15 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
             );
           }
 
-          return services.shifts.startShift(
+          const at = resolveOccurredAt(request, body.occurredAt);
+          const started = await services.shifts.startShift(
             {
               organizationId: actor.organizationId,
               workerId: actor.workerId as WorkerId,
               siteId,
               shiftTypeId: body.shiftTypeId as ShiftTypeId,
               initialPositionId: body.initialPositionId as PositionId | null,
-              at: resolveOccurredAt(request, body.occurredAt),
+              at,
               startedBySupervisor: false,
             },
             {
@@ -351,6 +361,27 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
               allowWorkerSelfShiftStart: policy?.allowWorkerSelfShiftStart ?? true,
             },
           );
+
+          /**
+           * Clocking in is what authorises the phone to report.
+           *
+           * The session opens with the shift and closes with it — that is the whole privacy
+           * model, and it is why there is no way to ask the server to start tracking on its own.
+           * A driver profile is attached when the worker has one, so a trip started later rides
+           * on this session rather than opening a second stream.
+           */
+          const tracking = await services.tracking.openSession({
+            organizationId: actor.organizationId,
+            context: 'WORK',
+            workerId: actor.workerId as WorkerId,
+            driverId: (driver?.id as DriverId | undefined) ?? null,
+            shiftId: started.shiftId,
+            tripId: null,
+            vehicleId: null,
+            at,
+          });
+
+          return { ...started, trackingSessionId: tracking.id };
         },
       );
     });
@@ -366,10 +397,24 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
         'worker.shift.end',
         request.body,
         async () => {
+          const at = resolveOccurredAt(request, body.occurredAt);
           const result = await services.shifts.endShift({
             organizationId: actor.organizationId,
             workerId: actor.workerId as WorkerId,
-            at: resolveOccurredAt(request, body.occurredAt),
+            at,
+          });
+
+          /**
+           * Tracking stops with the shift, not a moment later.
+           *
+           * Closing the session is what makes "no collection outside working time" true rather
+           * than promised: the ingestion endpoint refuses a closed session, so a device that
+           * keeps trying gets a 403 and knows to shut its collector down.
+           */
+          const tracking = await services.tracking.closeSessionForShift({
+            organizationId: actor.organizationId,
+            workerId: actor.workerId as WorkerId,
+            at,
           });
           // A worker who ends their shift while driving loses the elevation with the trip.
           if (result.endedDriving) {
@@ -379,7 +424,7 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
               permissions: withoutDrivingPermissions(actor.permissions),
             });
           }
-          return result;
+          return { ...result, tracking };
         },
       );
     });
@@ -552,6 +597,22 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
             sessionId: actor.sessionId,
             driverId: context.driverId,
             permissions: withDrivingPermissions(actor.permissions),
+          });
+
+          /**
+           * One stream, two contexts.
+           *
+           * The worker is already being tracked, so this attaches the trip to the session they
+           * already have rather than opening a second one. Their phone does not start reporting
+           * twice; the points it was already sending simply begin carrying the trip as well.
+           */
+          await services.tracking.attachTrip({
+            organizationId: actor.organizationId,
+            driverId: context.driverId,
+            workerId: actor.workerId as WorkerId,
+            tripId: context.tripId,
+            vehicleId: context.vehicleId,
+            at: resolveOccurredAt(request, body.occurredAt),
           });
 
           return {

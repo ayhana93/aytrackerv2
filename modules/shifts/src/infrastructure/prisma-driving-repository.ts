@@ -237,19 +237,15 @@ export class PrismaDrivingRepository implements DrivingRepository {
       select: { id: true },
     });
 
-    await this.db.trackingEvent.create({
-      data: {
-        organizationId: input.organizationId,
-        tripId: trip.id,
-        type: 'TRACKING_STARTED',
-        state: 'ACTIVE',
-        occurredAt: input.startedAt,
-        lastLatitude: input.startLatitude?.toFixed(6) ?? null,
-        lastLongitude: input.startLongitude?.toFixed(6) ?? null,
-        metadata: { source: 'driving_handoff' },
-      },
-    });
-
+    /*
+     * No TRACKING_STARTED written here.
+     *
+     * A worker moving onto a driving position is already being tracked — their working day's
+     * session opened when they clocked in, and the trip's points are that stream with a trip
+     * attached. Announcing a tracking start mid-shift would put a transition in the log that
+     * never happened. `TrackingCommandService.attachTrip` decides whether this trip genuinely
+     * needs a session of its own, and records the event only then.
+     */
     return { tripId: trip.id as TripId };
   }
 
@@ -300,7 +296,9 @@ export class PrismaDrivingRepository implements DrivingRepository {
       select: { startedAt: true, pausedSeconds: true },
     });
 
-    const points = await this.db.tripLocationPoint.findMany({
+    // The trip's own points, read through the trip overlay on the shared table. These are the
+    // same rows the working day's route is drawn from — never a second copy.
+    const points = await this.db.locationPoint.findMany({
       where: { organizationId: input.organizationId, tripId: input.tripId },
       select: { timestamp: true, latitude: true, longitude: true, accuracyMeters: true },
       orderBy: { timestamp: 'asc' },
@@ -341,17 +339,8 @@ export class PrismaDrivingRepository implements DrivingRepository {
       },
     });
 
-    await this.db.trackingEvent.create({
-      data: {
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        type: 'TRACKING_STOPPED',
-        state: 'STOPPED',
-        occurredAt: input.endedAt,
-        metadata: { source: 'driving_handoff' },
-      },
-    });
-
+    // Likewise no TRACKING_STOPPED: the employee is still at work and still reporting. Only
+    // `detachTrip` closes a session, and only when the trip owned one.
     return { distanceMeters: distance.distanceMeters, durationSeconds, untrackedSeconds };
   }
 }

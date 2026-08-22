@@ -91,6 +91,29 @@ async function loginWorker(slug: string): Promise<string> {
   return cookiesFrom(response.headers['set-cookie']);
 }
 
+/**
+ * The tracking session a trip's points belong to.
+ *
+ * Every point has an owning session now — that is what makes "no collection outside an
+ * authorised context" a schema property rather than a promise. A test that seeds a track has to
+ * seed the thing that authorised it.
+ */
+async function seedTripSession(target: TestTenant, tripId: string, startedAt: Date, endedAt: Date) {
+  const session = await prisma.trackingSession.create({
+    data: {
+      organizationId: target.organizationId,
+      context: 'DRIVER_TRIP',
+      driverId: target.driverId,
+      tripId,
+      vehicleId: target.vehicleId,
+      startedAt,
+      endedAt,
+    },
+    select: { id: true },
+  });
+  return session.id;
+}
+
 /** A completed trip with a track and one deliberate hole in it. */
 async function seedTrip(target: TestTenant, minutes = 40): Promise<string> {
   const startedAt = new Date('2026-03-10T08:00:00Z');
@@ -109,6 +132,8 @@ async function seedTrip(target: TestTenant, minutes = 40): Promise<string> {
     },
   });
 
+  const sessionId = await seedTripSession(target, trip.id, startedAt, endedAt);
+
   // Every 30 s, with points 10–20 min in omitted so exactly one gap exists.
   const points: { timestamp: Date; latitude: string; longitude: string }[] = [];
   for (let elapsed = 0; elapsed <= minutes * 60; elapsed += 30) {
@@ -121,9 +146,10 @@ async function seedTrip(target: TestTenant, minutes = 40): Promise<string> {
     });
   }
 
-  await prisma.tripLocationPoint.createMany({
+  await prisma.locationPoint.createMany({
     data: points.map((point) => ({
       organizationId: target.organizationId,
+      trackingSessionId: sessionId,
       tripId: trip.id,
       timestamp: point.timestamp,
       latitude: point.latitude,
@@ -291,6 +317,13 @@ describe('the stops on a route', () => {
       },
     });
 
+    const sessionId = await seedTripSession(
+      target,
+      trip.id,
+      startedAt,
+      new Date(startedAt.getTime() + totalMinutes * 60_000),
+    );
+
     const points: { timestamp: Date; latitude: string; longitude: string }[] = [];
     // Reported every 30 s throughout, so nothing here is a tracking gap — the stop has to be
     // found from the positions, not inferred from silence.
@@ -310,9 +343,10 @@ describe('the stops on a route', () => {
       });
     }
 
-    await prisma.tripLocationPoint.createMany({
+    await prisma.locationPoint.createMany({
       data: points.map((point) => ({
         organizationId: target.organizationId,
+        trackingSessionId: sessionId,
         tripId: trip.id,
         timestamp: point.timestamp,
         latitude: point.latitude,
