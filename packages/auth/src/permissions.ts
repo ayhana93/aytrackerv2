@@ -72,7 +72,14 @@ export const PERMISSIONS = {
   DRIVER_PORTAL_ACCESS: 'driver.portal.access',
   DRIVER_TRIP_START: 'driver.trip.start',
   DRIVER_TRIP_STOP: 'driver.trip.stop',
-  DRIVER_LOCATION_SUBMIT: 'driver.location.submit',
+  /*
+   * There is no `driver.location.submit`.
+   *
+   * It named a trip-scoped upload endpoint that no longer exists. Keeping a permission no route
+   * checks would be worse than useless: a permission is a claim about what an actor may do, and
+   * one nothing enforces is a claim that is not true. Reporting location is `tracking.submit`,
+   * below, and it is held by workers and drivers alike because there is one stream.
+   */
   /**
    * Reporting location into an open tracking session.
    *

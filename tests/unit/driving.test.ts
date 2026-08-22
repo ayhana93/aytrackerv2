@@ -288,7 +288,9 @@ describe('session elevation', () => {
     const elevated = withDrivingPermissions(BASE);
     expect(elevated).toContain('driver.trip.start');
     expect(elevated).toContain('driver.trip.stop');
-    expect(elevated).toContain('driver.location.submit');
+    // And nothing about submitting location: reporting is `tracking.submit`, which a worker
+    // already holds from their own role and must keep after they park.
+    expect(elevated.some((permission) => permission.includes('location'))).toBe(false);
   });
 
   it('does not duplicate a permission the session already carried', () => {

@@ -187,7 +187,6 @@ export const DRIVING_SESSION_PERMISSIONS: readonly string[] = [
   'driver.portal.access',
   'driver.trip.start',
   'driver.trip.stop',
-  'driver.location.submit',
   /*
    * `tracking.submit` is deliberately NOT in this list.
    *

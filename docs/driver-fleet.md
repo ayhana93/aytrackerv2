@@ -31,7 +31,7 @@ Another driver's trip is **not found**, not forbidden — a 403 would confirm th
 
 ```
 driver.portal.access   driver.trip.start   driver.trip.stop
-driver.location.submit driver.trip.history driver.vehicle.view
+driver.trip.history driver.vehicle.view tracking.submit
 ```
 
 The driver system role contains these and nothing else; a test asserts every entry starts with

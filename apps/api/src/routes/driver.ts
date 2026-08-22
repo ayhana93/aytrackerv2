@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { PERMISSIONS, assertPermission } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
 import { hashRequestBody } from '@aytracker/module-shifts';
-import { endTripSchema, startTripSchema, submitLocationsSchema } from '@aytracker/validation';
+import { endTripSchema, startTripSchema } from '@aytracker/validation';
 import { DEFAULT_SAMPLING_POLICY, estimateFuel } from '@aytracker/tracking';
 import type {
   ClientActionId,
@@ -12,8 +12,7 @@ import type {
   VehicleId,
   WorkerId,
 } from '@aytracker/types';
-import { ForbiddenError, NotFoundError } from '@aytracker/domain';
-import type { TrackingSessionId } from '@aytracker/module-tracking';
+import { NotFoundError } from '@aytracker/domain';
 import type { AppServices } from '../services/container.js';
 
 /**
@@ -474,72 +473,18 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
       );
     });
 
-    /**
-     * Location ingestion.
+    /*
+     * There is no `/driver/location`.
      *
-     * Not wrapped in the idempotency ledger: a batch is a set of points, and appending the same
-     * point twice is prevented by ordering and the accepted-timestamp cursor rather than by
-     * storing a response for every batch a driver ever sends. Writing an idempotency row per
-     * batch would double the write volume of the busiest endpoint in the system.
+     * It existed, it worked, and it was a second ingestion path — which is the one thing this
+     * design does not allow. It reached the same `ingest`, but the route around it was its own:
+     * it never applied the sampling floor, and once geofences and speed alerts arrived it did not
+     * derive those either. So a driver whose client posted here produced a route with no fence
+     * crossings and no speed alerts, and nothing anywhere said so.
+     *
+     * Every device now posts to `/api/v1/tracking/points`, which resolves the session from the
+     * actor rather than from a trip id in the body. See apps/api/src/routes/tracking.ts.
      */
-    app.post(
-      '/location',
-      {
-        config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
-        preHandler: app.requireEntitlement(FEATURES.GPS_TRACKING),
-      },
-      async (request) => {
-        const actor = app.requireAuth(request);
-        assertPermission(actor, PERMISSIONS.DRIVER_LOCATION_SUBMIT);
-        const body = submitLocationsSchema.parse(request.body);
-
-        /**
-         * Resolved from the trip, not trusted from the body.
-         *
-         * The session that owns a trip's points may be the trip's own or the working day it
-         * runs inside — `attachTrip` decided that when the trip started. Either way the client
-         * does not get to say, and a trip belonging to another driver is simply not found.
-         */
-        const trip = await services.prisma.driverTrip.findFirst({
-          where: {
-            id: body.tripId,
-            organizationId: actor.organizationId,
-            driverId: actor.driverId!,
-          },
-          select: { id: true, driverId: true, driver: { select: { workerId: true } } },
-        });
-        if (!trip) throw new NotFoundError('trip.not_found', 'Trip not found.');
-
-        const session = await services.prisma.trackingSession.findFirst({
-          where: {
-            organizationId: actor.organizationId,
-            endedAt: null,
-            OR: [
-              { context: 'DRIVER_TRIP', tripId: trip.id },
-              ...(trip.driver.workerId
-                ? [{ context: 'WORK' as const, workerId: trip.driver.workerId }]
-                : []),
-            ],
-          },
-          select: { id: true },
-        });
-        if (!session) {
-          throw new ForbiddenError(
-            'tracking.no_open_session',
-            'Location is only recorded during an open shift or trip.',
-          );
-        }
-
-        return services.tracking.ingest({
-          organizationId: actor.organizationId,
-          sessionId: session.id as TrackingSessionId,
-          points: body.points,
-          deviceReported: body.deviceReported,
-          telemetry: { batteryLevel: body.batteryLevel },
-          now: services.clock.now(),
-        });
-      },
-    );
 
     /** The driver's own trip history. Scoped by the session; no driver id parameter exists. */
     app.get('/trips', async (request) => {

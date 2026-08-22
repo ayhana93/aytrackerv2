@@ -107,15 +107,12 @@ export const submitTrackingPointsSchema = z.object({
 
 export type SubmitTrackingPointsRequest = z.infer<typeof submitTrackingPointsSchema>;
 
-/** @deprecated The trip-scoped shape. `/driver/location` still accepts it; new clients post to
- * `/tracking/points`, which needs neither a trip nor a session. */
-export const submitLocationsSchema = z.object({
-  clientActionId: clientActionIdSchema,
-  tripId: uuidSchema,
-  points: z.array(locationPointSchema).min(1).max(500),
-  deviceReported: z.enum(['ONLINE', 'OFFLINE', 'PERMISSION_DENIED']).nullable().default(null),
-  batteryLevel: z.number().min(0).max(1).nullable().default(null),
-});
+/*
+ * There is no trip-scoped submission shape any more.
+ *
+ * A body carrying a `tripId` invited the client to say which trip its points belonged to, and the
+ * server has never accepted that answer — the trip is decided per point from the timestamp. The
+ * field's only remaining effect was to make a second ingestion route look reasonable.
+ */
 
 export type StartTripRequest = z.infer<typeof startTripSchema>;
-export type SubmitLocationsRequest = z.infer<typeof submitLocationsSchema>;

@@ -87,7 +87,8 @@ optionally a feature flag. It does not mean editing unrelated modules. See
 AYtracker/
 ├── apps/
 │   ├── web/                  Next.js — admin, worker and driver portals (PWA)
-│   └── api/                  Fastify — the only writer of business state
+│   ├── api/                  Fastify — the only writer of business state
+│   └── mobile/               Capacitor shell — background GPS only, no screens of its own
 ├── packages/
 │   ├── types/                branded ids, actor context. No runtime deps.
 │   ├── config/               environment schema, parsed once at boot
@@ -97,12 +98,13 @@ AYtracker/
 │   ├── localization/         locales, catalogs, formatting
 │   ├── market/               MarketResolver, CurrencyService, TaxService
 │   ├── billing/              PricingCatalog, Entitlements, BillingProvider
-│   ├── tracking/             geometry, tracking state, fuel, sampling
+│   ├── tracking/             geometry, tracking state, fuel, sampling, geofences, speed
 │   ├── database/             Prisma client, tenant scoping, error translation
 │   └── ui/                   white-label theming (components await the design phase)
 ├── modules/
 │   ├── workforce/  shifts/  production/  reporting/
 │   ├── drivers/    fleet/   recommendations/  audit/
+│   └── tracking/             sessions, admission, the one ingestion path
 ├── tests/                    unit, integration, e2e
 ├── infrastructure/           deployment configuration
 └── docs/
@@ -228,24 +230,31 @@ Two consequences worth stating, because both are places people get this wrong:
 
 ---
 
-## 8. Design workflow — the deliberate gap
+## 8. The interface
 
-**The visual design of AYtracker has not been decided, and this build does not decide it.**
+`packages/ui` owns the white-label theming _plumbing_: semantic CSS custom properties derived from
+`OrganizationBranding`, with WCAG contrast checking so a customer's brand colour can never produce
+unreadable text. The primitives and the admin shell are built on top of it, so a tenant's branding
+reaches every screen without a component knowing what colour it is.
 
-What exists today:
+`apps/web` is three real portals against the real API:
 
-- `packages/ui` contains the white-label theming _plumbing_: semantic CSS custom properties
-  derived from `OrganizationBranding`, with WCAG contrast checking so a customer's brand colour
-  can never produce unreadable text. No visual design decisions.
-- `apps/web` contains wireframe placeholder routes with a note saying exactly that.
+- **Worker** — clock in, change position, take a break, take a vehicle. Runs the tracking collector
+  for the life of the shift.
+- **Driver** — start and end a trip, with an optional route and planned distance. No pause control
+  exists anywhere in it.
+- **Admin** — dashboard, who is on shift, staff, history, zones and positions, fleet, trips, the
+  live map, geofences and settings.
 
-What happens next: **development is at the design phase, and waits for a design reference** —
-screenshots, Figma, a reference application, or a stated style direction. On receiving it:
-analyze it, extract tokens, define typography and spacing, define components and layouts, then
-build the worker, admin and driver interfaces on top of the white-label theming layer that is
-already in place.
+Two rules hold across all three, and both exist because breaking either produces a number somebody
+would act on:
 
-Building a component library before that point would be choosing the design by accident.
+- **No screen computes a figure the server could compute.** Distance, duration, fuel, speed,
+  staleness and every count come down the wire finished. A total a client can recompute is a total
+  a client can change.
+- **No timer runs off the device clock.** Every response that drives one carries `serverTime`, and
+  the elapsed figures are offset from it — a phone an hour fast must not show an hour of work
+  nobody did.
 
 ---
 
@@ -330,22 +339,23 @@ published after the transaction rather than inside it.
 
 ## Document map
 
-| Topic                               | Document                                           |
-| ----------------------------------- | -------------------------------------------------- |
-| Entity map, indexes, constraints    | [database.md](database.md)                         |
-| Sessions, PINs, lockout, CSRF       | [authentication.md](authentication.md)             |
-| Permissions, roles, guards          | [authorization.md](authorization.md)               |
-| Tenant isolation, RLS               | [multi-tenancy.md](multi-tenancy.md)               |
-| Markets, pricing, tax               | [market-pricing.md](market-pricing.md)             |
-| Subscriptions, provider seam, VAT   | [billing.md](billing.md)                           |
-| Locales, catalogs, formatting       | [localization.md](localization.md)                 |
-| Branding, theming, uploads          | [white-label.md](white-label.md)                   |
-| Module boundaries, adding a module  | [modular-architecture.md](modular-architecture.md) |
-| Positions, eligibility, corrections | [position-management.md](position-management.md)   |
-| Drivers, vehicles, costs            | [driver-fleet.md](driver-fleet.md)                 |
-| GPS, tracking states, privacy       | [tracking.md](tracking.md)                         |
-| Offline queue, idempotency          | [offline-sync.md](offline-sync.md)                 |
-| Customer feedback to roadmap        | [recommendations.md](recommendations.md)           |
-| Endpoints and conventions           | [api.md](api.md)                                   |
-| Railway, migrations, backups        | [deployment.md](deployment.md)                     |
-| Decision records                    | [decisions/](decisions/)                           |
+| Topic                                 | Document                                           |
+| ------------------------------------- | -------------------------------------------------- |
+| Entity map, indexes, constraints      | [database.md](database.md)                         |
+| Sessions, PINs, lockout, CSRF         | [authentication.md](authentication.md)             |
+| Permissions, roles, guards            | [authorization.md](authorization.md)               |
+| Tenant isolation, RLS                 | [multi-tenancy.md](multi-tenancy.md)               |
+| Markets, pricing, tax                 | [market-pricing.md](market-pricing.md)             |
+| Subscriptions, provider seam, VAT     | [billing.md](billing.md)                           |
+| Locales, catalogs, formatting         | [localization.md](localization.md)                 |
+| Branding, theming, uploads            | [white-label.md](white-label.md)                   |
+| Module boundaries, adding a module    | [modular-architecture.md](modular-architecture.md) |
+| Positions, eligibility, corrections   | [position-management.md](position-management.md)   |
+| Drivers, vehicles, costs              | [driver-fleet.md](driver-fleet.md)                 |
+| GPS arithmetic, states, privacy       | [tracking.md](tracking.md)                         |
+| The tracking engine, sessions, fences | [workforce-tracking.md](workforce-tracking.md)     |
+| Offline queue, idempotency            | [offline-sync.md](offline-sync.md)                 |
+| Customer feedback to roadmap          | [recommendations.md](recommendations.md)           |
+| Endpoints and conventions             | [api.md](api.md)                                   |
+| Railway, migrations, backups          | [deployment.md](deployment.md)                     |
+| Decision records                      | [decisions/](decisions/)                           |

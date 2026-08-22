@@ -166,7 +166,6 @@ writes `driverId` onto it and adds the driving permissions:
 driver.portal.access
 driver.trip.start
 driver.trip.stop
-driver.location.submit
 driver.trip.history
 driver.vehicle.view
 ```

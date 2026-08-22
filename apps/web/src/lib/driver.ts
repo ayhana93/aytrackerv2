@@ -1,6 +1,5 @@
 'use client';
 
-import type { RawPoint } from '@aytracker/tracking-client';
 import { apiRequest } from './api';
 import { actionId } from './worker';
 
@@ -125,32 +124,8 @@ export const driverApi = {
 
   trips: () => apiRequest<{ trips: TripHistoryRow[] }>('/driver/trips', { query: { limit: 30 } }),
 
-  /**
-   * Uploads a batch of points.
-   *
-   * Called by the collector, which owns retry: this throws on failure and the points stay in the
-   * device queue rather than being dropped. Timestamps go out as ISO strings because that is
-   * what the server's schema accepts; the collector holds them as epoch milliseconds.
-   */
-  submitLocations: (tripId: string, points: readonly RawPoint[], online: boolean) =>
-    apiRequest<{ accepted: number; rejected: number; state: string }>('/driver/location', {
-      method: 'POST',
-      body: {
-        clientActionId: actionId(),
-        tripId,
-        deviceReported: online ? 'ONLINE' : 'OFFLINE',
-        points: points.map((point) => ({
-          timestamp: new Date(point.timestamp).toISOString(),
-          latitude: point.latitude,
-          longitude: point.longitude,
-          accuracyMeters: point.accuracyMeters,
-          speedMps: point.speedMps,
-          heading: point.heading,
-          altitude: point.altitude,
-          source: point.source,
-        })),
-      },
-    }),
+  // Points are not uploaded from here. Every device posts to `/tracking/points` through
+  // `lib/tracking.ts`, which is the only ingestion path there is — see docs/workforce-tracking.md.
 };
 
 /**
