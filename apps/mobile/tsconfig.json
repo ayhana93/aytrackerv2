@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "outDir": "dist",
+    "noEmit": false
+  },
+  "include": ["src/**/*", "capacitor.config.ts"],
+  "exclude": ["node_modules", "dist", "android", "ios"]
+}
