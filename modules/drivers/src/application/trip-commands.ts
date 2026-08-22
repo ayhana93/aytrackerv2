@@ -5,7 +5,7 @@ import {
   type Clock,
   type EventBus,
 } from '@aytracker/domain';
-import type { DriverId, OrganizationId, TripId } from '@aytracker/types';
+import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
 import {
   computeTrackDistance,
   deriveTrackingState,
@@ -49,22 +49,68 @@ export class TripCommandService {
    *
    * The vehicle is resolved server-side from the assignment table. A driver cannot start a trip
    * on a vehicle they are not assigned to, whatever the request body says.
+   *
+   * `label` and `plannedDistanceMeters` are the route, and both are optional. A trip with
+   * neither is a perfectly ordinary trip — the vehicle went out and came back, and the record of
+   * where it went is the track itself. Requiring a route to be declared first would mean a
+   * driver who has to leave now either invents one or drives untracked, and the second of those
+   * is what actually happens.
    */
   async startTrip(input: {
     organizationId: OrganizationId;
     driverId: DriverId;
     label: string | null;
+    plannedDistanceMeters: number | null;
+    /**
+     * The vehicle the driver picked, when they hold none already.
+     *
+     * Ignored when an assignment exists — a driver who has been given a van by their fleet
+     * manager drives that van, and a vehicle id in a request body has never been allowed to
+     * override an assignment on the server.
+     */
+    requestedVehicleId: VehicleId | null;
     startLatitude: number | null;
     startLongitude: number | null;
     startOdometer: string | null;
     at: Date;
   }): Promise<{ tripId: TripId; vehicleId: string }> {
-    const vehicleId = await this.vehicles.currentVehicleId(input.organizationId, input.driverId);
+    const assigned = await this.vehicles.currentVehicleId(input.organizationId, input.driverId);
+
+    /**
+     * Picking the vehicle is part of starting the trip.
+     *
+     * The alternative — a separate "take a vehicle" step that persists between trips — leaves
+     * vans assigned to drivers who went home, and the next person to need one finds it held by
+     * somebody who is not in the building. Claiming at the start and releasing at the end means
+     * a vehicle is only ever held while it is genuinely out.
+     */
+    let vehicleId = assigned;
     if (!vehicleId) {
-      throw new PreconditionFailedError(
-        'trip.no_vehicle_assigned',
-        'No vehicle is currently assigned to this driver.',
+      if (!input.requestedVehicleId) {
+        throw new PreconditionFailedError(
+          'trip.no_vehicle_assigned',
+          'No vehicle is currently assigned to this driver, and none was chosen.',
+        );
+      }
+      /**
+       * Refuse an already-running trip *before* taking a vehicle for it.
+       *
+       * The transaction below checks this too, and the partial unique index decides it under
+       * concurrency. This earlier read exists only so a driver whose trip is already running
+       * does not end up holding a second van that no command will ever hand back.
+       */
+      assertNoOpenTrip(
+        await this.transactions.run(input.organizationId, (uow) =>
+          uow.trips.findOpenForDriver(input.organizationId, input.driverId),
+        ),
       );
+      await this.vehicles.claimForTrip({
+        organizationId: input.organizationId,
+        driverId: input.driverId,
+        vehicleId: input.requestedVehicleId,
+        at: input.at,
+      });
+      vehicleId = input.requestedVehicleId;
     }
 
     const result = await this.transactions.run(input.organizationId, async (uow) => {
@@ -76,6 +122,7 @@ export class TripCommandService {
         driverId: input.driverId,
         vehicleId,
         label: input.label,
+        plannedDistanceMeters: input.plannedDistanceMeters,
         startedAt: input.at,
         startLatitude: input.startLatitude,
         startLongitude: input.startLongitude,
@@ -105,23 +152,18 @@ export class TripCommandService {
     return { tripId: result.tripId, vehicleId };
   }
 
-  async pauseTrip(input: {
-    organizationId: OrganizationId;
-    driverId: DriverId;
-    tripId: TripId;
-    at: Date;
-  }): Promise<void> {
-    await this.transitionOwnTrip(input, 'PAUSED', 'TRACKING_PAUSED');
-  }
-
-  async resumeTrip(input: {
-    organizationId: OrganizationId;
-    driverId: DriverId;
-    tripId: TripId;
-    at: Date;
-  }): Promise<void> {
-    await this.transitionOwnTrip(input, 'ACTIVE', 'TRACKING_RESUMED');
-  }
+  /**
+   * There is no `pauseTrip`, and that is the point.
+   *
+   * A running trip is recorded until it ends. The driver's screen has a start and a stop and
+   * nothing in between, because a pause control is a way to keep driving with the recording
+   * switched off — and the fuel burned in that window belongs to nobody. Standing still needs no
+   * button: a stationary vehicle produces a stop on its own track, computed from the points.
+   *
+   * Historical trips may still carry TRACKING_PAUSED events from before this was removed, so the
+   * pause arithmetic below stays: `endTrip` reads those intervals and excludes them, which keeps
+   * an old trip's totals what they always were.
+   */
 
   /**
    * Ends a trip and computes its final numbers.
@@ -211,6 +253,15 @@ export class TripCommandService {
         odometer: input.endOdometer,
       });
     }
+
+    // The trip is over, so the vehicle goes back in the pool — but only if this module took it.
+    // A manual assignment is a fleet decision and survives.
+    await this.vehicles.releaseAutomatic({
+      organizationId: input.organizationId,
+      driverId: input.driverId,
+      vehicleId: result.vehicleId as VehicleId,
+      endedAt: input.at,
+    });
 
     await this.events.publish({
       name: 'trip.completed',
@@ -360,44 +411,6 @@ export class TripCommandService {
       }
 
       return { interrupted };
-    });
-  }
-
-  private async transitionOwnTrip(
-    input: { organizationId: OrganizationId; driverId: DriverId; tripId: TripId; at: Date },
-    to: 'ACTIVE' | 'PAUSED',
-    eventType: 'TRACKING_PAUSED' | 'TRACKING_RESUMED',
-  ): Promise<void> {
-    await this.transactions.run(input.organizationId, async (uow) => {
-      const trip = await this.requireOwnTrip(
-        uow,
-        input.organizationId,
-        input.driverId,
-        input.tripId,
-      );
-      assertTransition(trip.status, to);
-
-      const state: TrackingState = to === 'PAUSED' ? 'PAUSED' : 'ACTIVE';
-      await uow.trips.updateStatus({
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        status: to,
-        trackingState: state,
-      });
-      await uow.trackingEvents.record({
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        type: eventType,
-        state,
-        occurredAt: input.at,
-      });
-    });
-
-    await this.events.publish({
-      name: to === 'PAUSED' ? 'trip.paused' : 'trip.resumed',
-      organizationId: input.organizationId,
-      occurredAt: input.at,
-      payload: { tripId: input.tripId, driverId: input.driverId },
     });
   }
 

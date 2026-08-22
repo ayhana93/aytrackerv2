@@ -60,10 +60,17 @@ export const PERMISSIONS = {
   DRIVERS_READ: 'drivers.read',
   DRIVERS_MANAGE: 'drivers.manage',
 
-  // --- driver self-service (held by a DRIVER session) ----------------------
+  /**
+   * Driver self-service (held by a DRIVER session).
+   *
+   * There is deliberately no `driver.trip.pause`. A driver can start a trip and end a trip;
+   * they cannot suspend the recording of one that is running. Pausing was the one control on
+   * the driver's screen that let the vehicle keep moving while the record stopped — a hundred
+   * kilometres of fuel with nothing to attribute it to. Standing still is already visible
+   * without any button: it shows up as a stop on the route.
+   */
   DRIVER_PORTAL_ACCESS: 'driver.portal.access',
   DRIVER_TRIP_START: 'driver.trip.start',
-  DRIVER_TRIP_PAUSE: 'driver.trip.pause',
   DRIVER_TRIP_STOP: 'driver.trip.stop',
   DRIVER_LOCATION_SUBMIT: 'driver.location.submit',
   DRIVER_TRIP_HISTORY: 'driver.trip.history',

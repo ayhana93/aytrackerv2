@@ -110,6 +110,12 @@ export interface CreateVehicleInput {
   readonly vehicleType: VehicleType;
   readonly fuelType: FuelType;
   readonly odometerCurrent?: string;
+  /**
+   * Litres per 100 km. Optional, and the one optional field worth asking for at registration:
+   * without it no fuel figure can be produced for this vehicle at all — not on the driver's
+   * screen, not in a cost report.
+   */
+  readonly averageConsumption?: string | null;
   readonly year?: number | null;
   readonly vin?: string | null;
   readonly notes?: string;
@@ -237,6 +243,30 @@ export interface HistoryResponse {
   readonly truncated: boolean;
 }
 
+/**
+ * How this organization is configured to behave.
+ *
+ * `fuelPricePerLiter` is a string, like every decimal that crosses the wire: it is money, and a
+ * float that survives one round trip does not survive three.
+ */
+export interface SettingsResponse {
+  readonly fuelPricePerLiter: string | null;
+  readonly currency: string;
+  readonly timezone: string;
+  readonly allowWorkerSelfShiftStart: boolean;
+  readonly maxShiftDurationMinutes: number;
+  readonly gpsMinIntervalSeconds: number;
+  readonly gpsMinDistanceMeters: number;
+}
+
+export interface UpdateSettingsInput {
+  readonly fuelPricePerLiter?: string | null;
+  readonly allowWorkerSelfShiftStart?: boolean;
+  readonly maxShiftDurationMinutes?: number;
+  readonly gpsMinIntervalSeconds?: number;
+  readonly gpsMinDistanceMeters?: number;
+}
+
 export interface BrandingResponse {
   readonly companyName: string;
   readonly slug: string;
@@ -256,6 +286,10 @@ export const adminApi = {
     apiRequest<{ trips: TripRow[] }>('/admin/trips', { query }),
   track: (tripId: string) => apiRequest<TrackResponse>(`/admin/trips/${tripId}/track`),
   branding: () => apiRequest<BrandingResponse>('/admin/branding'),
+
+  settings: () => apiRequest<SettingsResponse>('/admin/settings'),
+  updateSettings: (body: UpdateSettingsInput) =>
+    apiRequest<SettingsResponse>('/admin/settings', { method: 'PATCH', body }),
 
   workers: () => apiRequest<{ workers: WorkerRow[] }>('/admin/workers'),
   createWorker: (body: CreateWorkerInput) =>

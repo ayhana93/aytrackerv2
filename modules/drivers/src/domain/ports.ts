@@ -1,6 +1,6 @@
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
 import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
-import type { AcceptedLocationPoint, PauseInterval, TripState, TripStatus } from './trip.js';
+import type { AcceptedLocationPoint, PauseInterval, TripState } from './trip.js';
 
 export interface TripRepository {
   findById(organizationId: OrganizationId, tripId: TripId): Promise<TripState | null>;
@@ -10,17 +10,12 @@ export interface TripRepository {
     driverId: DriverId;
     vehicleId: VehicleId;
     label: string | null;
+    plannedDistanceMeters: number | null;
     startedAt: Date;
     startLatitude: number | null;
     startLongitude: number | null;
     startOdometer: string | null;
   }): Promise<TripState>;
-  updateStatus(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    status: TripStatus;
-    trackingState: TrackingState;
-  }): Promise<void>;
   close(input: {
     organizationId: OrganizationId;
     tripId: TripId;
@@ -110,6 +105,26 @@ export interface DriverVehicleAccess {
     organizationId: OrganizationId;
     vehicleId: VehicleId;
     odometer: string;
+  }): Promise<void>;
+  /**
+   * Takes a vehicle for the duration of a trip.
+   *
+   * Marked automatic, so ending the trip hands it back. An assignment a fleet manager made by
+   * hand is a decision and is never touched by this. Refuses rather than steals: a vehicle
+   * another driver is holding stays with them.
+   */
+  claimForTrip(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    at: Date;
+  }): Promise<void>;
+  /** Hands back an automatic assignment. A no-op when the assignment was a manual one. */
+  releaseAutomatic(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    endedAt: Date;
   }): Promise<void>;
 }
 

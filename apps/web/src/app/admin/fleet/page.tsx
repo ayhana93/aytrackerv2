@@ -231,10 +231,15 @@ export default function FleetPage() {
 /**
  * Registering a vehicle.
  *
- * Six fields, and every one of them is needed to tell this vehicle from another or to treat it
- * correctly. VIN, tank size and consumption are real columns and deliberately not here: a vehicle
+ * Six required fields, and every one of them is needed to tell this vehicle from another or to
+ * treat it correctly. VIN and tank size are real columns and deliberately not here: a vehicle
  * somebody cannot add today because the VIN is in a folder in another building is a vehicle that
  * gets tracked on paper instead. They belong on an edit screen, next to the documents.
+ *
+ * Average consumption is the exception, and it is optional. It is the number that turns
+ * kilometres into litres, so a fleet registered without it can show distance and nothing else —
+ * no fuel on the driver's screen, no cost per kilometre in a report. Asking once here is far
+ * cheaper than discovering the gap a month later.
  *
  * Inline on the page rather than in a dialog, for the same reason the positions form is: adding
  * three vans in a row should not mean opening and closing three dialogs.
@@ -246,6 +251,7 @@ function NewVehicleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
   const [vehicleType, setVehicleType] = useState<VehicleType>('VAN');
   const [fuelType, setFuelType] = useState<FuelType>('DIESEL');
   const [odometer, setOdometer] = useState('');
+  const [consumption, setConsumption] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -267,6 +273,10 @@ function NewVehicleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
         // A blank odometer means "not known", which is zero for a vehicle nobody has driven yet.
         // Sent as a string because the column is a Decimal — see CreateVehicleInput.
         odometerCurrent: odometer.trim() === '' ? '0' : odometer.trim().replace(',', '.'),
+        // Null rather than a guess. A vehicle with no recorded consumption produces no fuel
+        // figure anywhere, which is the honest outcome — an assumed 8 L/100 km would put an
+        // invented number in a cost report.
+        averageConsumption: consumption.trim() === '' ? null : consumption.trim().replace(',', '.'),
       })
       .then(onCreated)
       .catch((caught: unknown) => {
@@ -379,6 +389,22 @@ function NewVehicleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
               value={odometer}
               placeholder="0"
               onChange={(event) => setOdometer(event.target.value)}
+            />
+          </Field>
+
+          {/*
+            Consumption is what turns kilometres into a fuel figure. Without it the driver's
+            screen and every cost report can show distance and nothing else — so it is asked for
+            here, optional, rather than left to an edit screen nobody opens.
+          */}
+          <Field label="Среден разход" hint="л/100км. Може и по-късно — тогава няма прогноза.">
+            <input
+              className="ay-input"
+              type="text"
+              inputMode="decimal"
+              value={consumption}
+              placeholder="8.2"
+              onChange={(event) => setConsumption(event.target.value)}
             />
           </Field>
         </div>

@@ -87,11 +87,25 @@ synced out of order still ends with the right number.
 ```
 ACTIVE       fresh, accurate points arriving on schedule
 DEGRADED     still arriving, but late or low-accuracy
-PAUSED       the driver paused the trip — not an anomaly
+PAUSED       a historical state; no driver can produce it any more — see below
 INTERRUPTED  nothing received past the stale threshold, trip still open
 OFFLINE      the device told us it lost connectivity
 STOPPED      no active tracking session
 ```
+
+### Nothing a driver can press produces PAUSED
+
+There is no pause control and no `driver.trip.pause` permission. A trip records from the moment
+it starts until the driver ends it.
+
+Pausing was the one control that let the vehicle keep moving while the record stopped: press
+pause, drive a hundred kilometres, press resume, and the fuel burned in that window belongs to
+nobody while the route shows a straight line across the middle. Standing still needs no button —
+a stationary vehicle produces a stop on its own track, detected server-side from the points.
+
+The state and the arithmetic that excludes pause intervals both remain, because trips recorded
+before this was removed still carry `TRACKING_PAUSED` events, and their totals must stay what
+they always were.
 
 ### The anti-tampering rule
 
@@ -112,8 +126,8 @@ similar from the server. So the model reports what is observable and leaves inte
 None of these accuses anyone. There is no `DRIVER_DISABLED_TRACKING` event, and there is no state
 that asserts intent — a test asserts the state union to keep it that way.
 
-Derivation order matters: a `PAUSED` trip is never called interrupted (the driver told us they
-stopped), and an explicit device report beats an inference from silence.
+Derivation order matters: a `PAUSED` trip — only ever a historical one now — is never called
+interrupted, and an explicit device report beats an inference from silence.
 
 ---
 
@@ -133,7 +147,8 @@ Rules:
   `reconstruct()` returns `gapAfterIndices` so the renderer breaks the line.
 - **Distance is not interpolated across a gap.** The segment is excluded and the time is reported
   as `untrackedSeconds` on the trip.
-- **Driver-initiated pauses are not gaps.** Pause intervals are excluded.
+- **Pause intervals on historical trips are not gaps.** They are excluded, so a trip recorded
+  before pausing was removed keeps the totals it always had.
 - **Silence before the trip ends is a gap.** A phone that died 10 minutes before arrival leaves
   10 minutes we cannot account for, and saying so is the point.
 

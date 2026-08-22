@@ -2,14 +2,9 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { PERMISSIONS, assertPermission } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
 import { hashRequestBody } from '@aytracker/module-shifts';
-import {
-  endTripSchema,
-  startTripSchema,
-  submitLocationsSchema,
-  tripActionSchema,
-} from '@aytracker/validation';
-import { DEFAULT_SAMPLING_POLICY } from '@aytracker/tracking';
-import type { ClientActionId, DriverId, TripId } from '@aytracker/types';
+import { endTripSchema, startTripSchema, submitLocationsSchema } from '@aytracker/validation';
+import { DEFAULT_SAMPLING_POLICY, estimateFuel } from '@aytracker/tracking';
+import type { ClientActionId, CurrencyCode, DriverId, TripId, VehicleId } from '@aytracker/types';
 import { NotFoundError } from '@aytracker/domain';
 import type { AppServices } from '../services/container.js';
 
@@ -22,9 +17,50 @@ import type { AppServices } from '../services/container.js';
  * Location ingestion is rate limited far more generously than the rest of the API — it is the
  * one endpoint expected to be called every few seconds by every active driver — but it is
  * limited, because "high frequency" and "unbounded" are different things.
+ *
+ * There is no pause endpoint. See `PERMISSIONS.DRIVER_*` for why: a trip records from start to
+ * end, and the only two things a driver can do to it are begin it and finish it.
  */
 
 const IDEMPOTENCY_TTL_SECONDS = 48 * 60 * 60;
+
+/**
+ * What a trip has cost in fuel so far, as an estimate.
+ *
+ * Returns null rather than a zero whenever an input is missing. A vehicle with no recorded
+ * consumption and an organization that has never entered a fuel price cannot produce a cost, and
+ * showing "0.00 лв." for that is worse than showing nothing — one is an absence, the other is a
+ * claim. `isEstimate` travels with the number so no screen can render it as a real expense.
+ */
+function fuelEstimateFor(input: {
+  distanceMeters: number;
+  averageConsumption: unknown;
+  consumptionUnit: string;
+  pricePerLiter: unknown;
+  currency: string;
+}): { liters: number; cost: string | null; currency: string; pricePerLiter: string | null } | null {
+  const consumption = input.averageConsumption === null ? null : Number(input.averageConsumption);
+  if (consumption === null || !Number.isFinite(consumption) || consumption <= 0) return null;
+
+  const price = input.pricePerLiter === null ? null : String(input.pricePerLiter);
+
+  // Litres are knowable from consumption alone; the cost additionally needs a price. Splitting
+  // them means a customer who has told us the vehicle drinks 8 L/100 km still sees litres.
+  const estimate = estimateFuel({
+    distanceMeters: input.distanceMeters,
+    averageConsumption: consumption,
+    consumptionUnit: input.consumptionUnit as 'L_PER_100KM',
+    pricePerLiter: price ?? '1',
+    currency: input.currency as CurrencyCode,
+  });
+
+  return {
+    liters: estimate.liters,
+    cost: price === null ? null : estimate.cost.amount,
+    currency: input.currency,
+    pricePerLiter: price,
+  };
+}
 
 export function driverRoutes(services: AppServices): FastifyPluginAsync {
   return async (app) => {
@@ -74,66 +110,147 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
       }
     }
 
-    /** The driver's home screen: assigned vehicle, active trip, tracking state. */
+    /**
+     * The driver's home screen, in one request.
+     *
+     * Everything the screen renders is here, already decided: which vehicle, whether a trip is
+     * running, how far it has gone, what that has cost in fuel. The device holds no state of its
+     * own beyond the points still queued for upload — reload the page mid-route and the same
+     * screen comes back, because the screen was never the record.
+     */
     app.get('/state', async (request) => {
       const actor = app.requireAuth(request);
       assertPermission(actor, PERMISSIONS.DRIVER_PORTAL_ACCESS);
+      const now = services.clock.now();
 
-      const assignment = await services.prisma.vehicleAssignment.findFirst({
-        where: { organizationId: actor.organizationId, driverId: actor.driverId!, endedAt: null },
-        select: {
-          startedAt: true,
-          vehicle: {
-            select: {
-              id: true,
-              registrationNumber: true,
-              make: true,
-              model: true,
-              fuelType: true,
-              odometerCurrent: true,
+      const [driver, assignment, trip, settings, organization] = await Promise.all([
+        services.prisma.driver.findFirst({
+          where: { id: actor.driverId!, organizationId: actor.organizationId },
+          select: {
+            id: true,
+            driverCode: true,
+            worker: { select: { firstName: true, lastName: true } },
+          },
+        }),
+        services.prisma.vehicleAssignment.findFirst({
+          where: {
+            organizationId: actor.organizationId,
+            driverId: actor.driverId!,
+            endedAt: null,
+          },
+          select: {
+            startedAt: true,
+            vehicle: {
+              select: {
+                id: true,
+                registrationNumber: true,
+                make: true,
+                model: true,
+                fuelType: true,
+                odometerCurrent: true,
+                averageConsumption: true,
+                consumptionUnit: true,
+              },
             },
           },
-        },
-      });
+        }),
+        services.prisma.driverTrip.findFirst({
+          where: {
+            organizationId: actor.organizationId,
+            driverId: actor.driverId!,
+            status: { in: ['ACTIVE', 'PAUSED'] },
+          },
+          select: {
+            id: true,
+            label: true,
+            plannedDistanceMeters: true,
+            status: true,
+            startedAt: true,
+            distanceMeters: true,
+            durationSeconds: true,
+            trackingState: true,
+            lastPointAt: true,
+          },
+        }),
+        services.prisma.organizationSettings.findUnique({
+          where: { organizationId: actor.organizationId },
+          select: {
+            gpsMinIntervalSeconds: true,
+            gpsMinDistanceMeters: true,
+            fuelPricePerLiter: true,
+          },
+        }),
+        services.prisma.organization.findUnique({
+          where: { id: actor.organizationId },
+          select: { defaultCurrency: true },
+        }),
+      ]);
 
-      const trip = await services.prisma.driverTrip.findFirst({
-        where: {
-          organizationId: actor.organizationId,
-          driverId: actor.driverId!,
-          status: { in: ['ACTIVE', 'PAUSED'] },
-        },
-        select: {
-          id: true,
-          label: true,
-          status: true,
-          startedAt: true,
-          distanceMeters: true,
-          durationSeconds: true,
-          trackingState: true,
-          lastPointAt: true,
-        },
-      });
-
-      const settings = await services.prisma.organizationSettings.findUnique({
-        where: { organizationId: actor.organizationId },
-        select: { gpsMinIntervalSeconds: true, gpsMinDistanceMeters: true },
-      });
+      const vehicle = assignment?.vehicle ?? null;
+      const fuel =
+        trip && vehicle
+          ? fuelEstimateFor({
+              distanceMeters: trip.distanceMeters,
+              averageConsumption: vehicle.averageConsumption,
+              consumptionUnit: vehicle.consumptionUnit,
+              pricePerLiter: settings?.fuelPricePerLiter ?? null,
+              currency: organization?.defaultCurrency ?? 'EUR',
+            })
+          : null;
 
       return {
-        vehicle: assignment
+        /**
+         * The server's clock, sent with every read.
+         *
+         * Every elapsed time on the driver's screen is measured against this rather than against
+         * the device's own clock. A tablet three hours out of sync would otherwise render a trip
+         * that started a minute ago as three hours long — which is exactly the number a driver
+         * then disputes, correctly.
+         */
+        serverTime: now.toISOString(),
+        driver: driver
           ? {
-              ...assignment.vehicle,
-              odometerCurrent: assignment.vehicle.odometerCurrent.toString(),
-              assignedSince: assignment.startedAt.toISOString(),
+              id: driver.id,
+              code: driver.driverCode,
+              firstName: driver.worker?.firstName ?? null,
+              lastName: driver.worker?.lastName ?? null,
+            }
+          : null,
+        vehicle: vehicle
+          ? {
+              id: vehicle.id,
+              registrationNumber: vehicle.registrationNumber,
+              make: vehicle.make,
+              model: vehicle.model,
+              fuelType: vehicle.fuelType,
+              odometerCurrent: vehicle.odometerCurrent.toString(),
+              averageConsumption:
+                vehicle.averageConsumption === null ? null : vehicle.averageConsumption.toString(),
+              consumptionUnit: vehicle.consumptionUnit,
+              assignedSince: assignment!.startedAt.toISOString(),
             }
           : null,
         trip: trip
           ? {
-              ...trip,
+              id: trip.id,
+              label: trip.label,
+              plannedDistanceMeters: trip.plannedDistanceMeters,
+              status: trip.status,
               startedAt: trip.startedAt?.toISOString() ?? null,
+              distanceMeters: trip.distanceMeters,
+              durationSeconds: trip.durationSeconds,
+              trackingState: trip.trackingState,
               lastPointAt: trip.lastPointAt?.toISOString() ?? null,
             }
           : null,
+        /**
+         * Fuel for the distance covered so far, and never anything else.
+         *
+         * An estimate, flagged as one, computed from the vehicle's recorded consumption and the
+         * organization's fuel price. Null when either is missing, so the screen shows nothing
+         * rather than a confident zero.
+         */
+        fuel,
         /**
          * The sampling policy the device should follow. Sent from the server so it can be tuned
          * per organization without shipping a new client — and treated as a floor on ingestion,
@@ -147,6 +264,80 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
             settings?.gpsMinDistanceMeters ?? DEFAULT_SAMPLING_POLICY.minDistanceMeters,
         },
       };
+    });
+
+    /**
+     * The vehicles this driver may take right now.
+     *
+     * Filtered server-side, like every list in this product: out of service, sold, deleted, or
+     * held by another driver, and it is not sent. A driver cannot start a trip on a vehicle that
+     * is missing from this list, because `startTrip` re-decides the same thing rather than
+     * trusting that the client only ever chooses from what it was shown.
+     *
+     * The vehicle they drove most recently sorts first — on most mornings that turns a list into
+     * a confirmation.
+     */
+    app.get('/vehicles', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.DRIVER_VEHICLE_VIEW);
+
+      const [vehicles, recent] = await Promise.all([
+        services.prisma.vehicle.findMany({
+          where: {
+            organizationId: actor.organizationId,
+            deletedAt: null,
+            status: 'ACTIVE',
+            // Either free, or already this driver's.
+            OR: [
+              { assignments: { none: { endedAt: null } } },
+              { assignments: { some: { endedAt: null, driverId: actor.driverId! } } },
+            ],
+          },
+          select: {
+            id: true,
+            registrationNumber: true,
+            make: true,
+            model: true,
+            vehicleType: true,
+            fuelType: true,
+            odometerCurrent: true,
+            assignments: {
+              where: { endedAt: null },
+              select: { driverId: true },
+              take: 1,
+            },
+          },
+          orderBy: { registrationNumber: 'asc' },
+          take: 200,
+        }),
+        services.prisma.driverTrip.findFirst({
+          where: { organizationId: actor.organizationId, driverId: actor.driverId! },
+          select: { vehicleId: true },
+          orderBy: { startedAt: 'desc' },
+        }),
+      ]);
+
+      const rows = vehicles.map((vehicle) => ({
+        id: vehicle.id,
+        registrationNumber: vehicle.registrationNumber,
+        make: vehicle.make,
+        model: vehicle.model,
+        vehicleType: vehicle.vehicleType,
+        fuelType: vehicle.fuelType,
+        odometer: vehicle.odometerCurrent.toString(),
+        /** True when this driver already holds it — no claim is needed to drive it. */
+        isHeldByYou: vehicle.assignments.length > 0,
+        /** True for the last vehicle this driver took out. Sorted to the top. */
+        isYourUsual: vehicle.id === recent?.vehicleId,
+      }));
+
+      rows.sort((a, b) => {
+        if (a.isHeldByYou !== b.isHeldByYou) return a.isHeldByYou ? -1 : 1;
+        if (a.isYourUsual !== b.isYourUsual) return a.isYourUsual ? -1 : 1;
+        return a.registrationNumber.localeCompare(b.registrationNumber);
+      });
+
+      return { vehicles: rows };
     });
 
     app.post('/trip/start', async (request) => {
@@ -164,6 +355,11 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
             organizationId: actor.organizationId,
             driverId: actor.driverId as DriverId,
             label: body.label,
+            // Kilometres on the wire, metres in the domain. Converted here rather than in the
+            // schema so the unit a person typed stays the unit the request describes.
+            plannedDistanceMeters:
+              body.plannedDistanceKm === null ? null : Math.round(body.plannedDistanceKm * 1000),
+            requestedVehicleId: (body.vehicleId as VehicleId | null) ?? null,
             startLatitude: body.startLatitude,
             startLongitude: body.startLongitude,
             startOdometer: body.startOdometer,
@@ -172,51 +368,15 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
       );
     });
 
-    app.post('/trip/:tripId/pause', async (request) => {
-      const actor = app.requireAuth(request);
-      assertPermission(actor, PERMISSIONS.DRIVER_TRIP_PAUSE);
-      const body = tripActionSchema.parse(request.body);
-      const { tripId } = request.params as { tripId: string };
-
-      return idempotent(
-        request,
-        body.clientActionId as ClientActionId,
-        'driver.trip.pause',
-        request.body,
-        async () => {
-          await services.trips.pauseTrip({
-            organizationId: actor.organizationId,
-            driverId: actor.driverId as DriverId,
-            tripId: tripId as TripId,
-            at: body.occurredAt ?? services.clock.now(),
-          });
-          return { ok: true };
-        },
-      );
-    });
-
-    app.post('/trip/:tripId/resume', async (request) => {
-      const actor = app.requireAuth(request);
-      assertPermission(actor, PERMISSIONS.DRIVER_TRIP_PAUSE);
-      const body = tripActionSchema.parse(request.body);
-      const { tripId } = request.params as { tripId: string };
-
-      return idempotent(
-        request,
-        body.clientActionId as ClientActionId,
-        'driver.trip.resume',
-        request.body,
-        async () => {
-          await services.trips.resumeTrip({
-            organizationId: actor.organizationId,
-            driverId: actor.driverId as DriverId,
-            tripId: tripId as TripId,
-            at: body.occurredAt ?? services.clock.now(),
-          });
-          return { ok: true };
-        },
-      );
-    });
+    /*
+     * No pause, no resume.
+     *
+     * They existed, and they were the hole in the product: a driver could stop the recording,
+     * drive a hundred kilometres, and resume — leaving fuel burned against no trip and a route
+     * with a straight line through the middle of it. A trip now records from the moment it
+     * starts until the moment it ends, and a stationary vehicle is visible as a stop on its own
+     * track without anybody pressing anything.
+     */
 
     app.post('/trip/:tripId/end', async (request) => {
       const actor = app.requireAuth(request);
@@ -292,6 +452,7 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
         select: {
           id: true,
           label: true,
+          plannedDistanceMeters: true,
           status: true,
           startedAt: true,
           endedAt: true,
@@ -329,6 +490,7 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
         select: {
           id: true,
           label: true,
+          plannedDistanceMeters: true,
           status: true,
           startedAt: true,
           endedAt: true,

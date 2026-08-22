@@ -11,6 +11,7 @@ import {
   IconHistory,
   IconPeople,
   IconRoute,
+  IconSettings,
   IconSignOut,
   IconStaff,
   IconZones,
@@ -49,6 +50,10 @@ const FLEET: readonly Entry[] = [
   { href: '/admin/trips', label: 'Маршрути', icon: IconRoute },
 ];
 
+const CONFIGURATION: readonly Entry[] = [
+  { href: '/admin/settings', label: 'Настройки', icon: IconSettings },
+];
+
 export function AdminNav() {
   const pathname = usePathname();
   const router = useRouter();
@@ -82,6 +87,8 @@ export function AdminNav() {
       {group(PEOPLE)}
       <SidebarSection>Автопарк</SidebarSection>
       {group(FLEET)}
+      <SidebarSection>Фирма</SidebarSection>
+      {group(CONFIGURATION)}
 
       <div style={{ flex: 1 }} />
 

@@ -117,6 +117,43 @@ export function multiplyMoney(value: Money, factor: string | number): Money {
   return fromMinorUnits(rounded, value.currency);
 }
 
+/**
+ * Multiplies two decimal strings into money, rounding once at the end.
+ *
+ * `multiplyMoney` needs its left operand to already *be* money, and money is capped at the
+ * currency's minor unit — two decimal places for the euro. That is right for anything anyone
+ * pays, and wrong for a unit price: a litre of diesel is advertised at 1.759, a kWh at 0.2148,
+ * and rounding those to 1.76 before multiplying by four hundred litres moves the answer by more
+ * than a euro. Passing such a price through `money()` does not merely lose precision, it throws
+ * `money.excess_precision`.
+ *
+ * So both operands stay exact decimals until the multiplication is done, and the single
+ * rounding happens on the result, half away from zero, at the currency's minor unit.
+ */
+export function multiplyDecimalsToMoney(a: string, b: string, currency: CurrencyCode): Money {
+  assertCurrency(currency);
+  const left = parseDecimal(a);
+  const right = parseDecimal(b);
+
+  const exponent = minorUnitExponent(currency);
+  const product = left.value * right.value;
+  // The product carries `left.scale + right.scale` decimal places; the result needs `exponent`.
+  const divisor = 10n ** BigInt(left.scale + right.scale);
+  const minor = divideHalfUp(product * 10n ** BigInt(exponent), divisor);
+  return fromMinorUnits(minor, currency);
+}
+
+/** A decimal string as an integer and the power of ten it is scaled by. */
+function parseDecimal(value: string): { value: bigint; scale: number } {
+  const match = /^(-)?(\d+)(?:\.(\d+))?$/.exec(value.trim());
+  if (!match) {
+    throw new ValidationError('money.invalid_amount', `Invalid decimal: ${value}`);
+  }
+  const [, sign, whole, fraction = ''] = match;
+  const digits = BigInt(`${whole}${fraction}`);
+  return { value: sign === '-' ? -digits : digits, scale: fraction.length };
+}
+
 /** Integer division rounding halves away from zero — the convention invoices expect. */
 export function divideHalfUp(numerator: bigint, denominator: bigint): bigint {
   if (denominator === 0n) {

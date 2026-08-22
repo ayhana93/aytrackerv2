@@ -1,4 +1,4 @@
-import { ValidationError, money, multiplyMoney } from '@aytracker/domain';
+import { ValidationError, multiplyDecimalsToMoney, multiplyMoney } from '@aytracker/domain';
 import type { CurrencyCode, Money } from '@aytracker/types';
 
 /**
@@ -71,8 +71,14 @@ export function estimateFuel(input: FuelEstimateInput): FuelEstimate {
   const per100 = toLitersPer100Km(input.averageConsumption, input.consumptionUnit);
   const liters = (distanceKm * per100) / 100;
 
-  const unitPrice = money(input.pricePerLiter, input.currency);
-  const cost = multiplyMoney(unitPrice, liters.toFixed(6));
+  /**
+   * The unit price keeps its own precision until the multiplication is done.
+   *
+   * Pump prices carry three decimals and the settings column stores four, so rounding the price
+   * to the currency's minor unit first would be rounding the wrong number — the error scales
+   * with every litre. One rounding, on the total.
+   */
+  const cost = multiplyDecimalsToMoney(input.pricePerLiter, liters.toFixed(6), input.currency);
 
   return {
     distanceKm: round(distanceKm, 3),
@@ -99,8 +105,10 @@ export function calculateFuelTotal(input: FuelExpenseInput): Money {
   if (!Number.isFinite(liters) || liters <= 0) {
     throw new ValidationError('fuel.invalid_liters', 'Litres must be a positive number.');
   }
-  const unitPrice = money(input.pricePerLiter, input.currency);
-  return multiplyMoney(unitPrice, input.liters);
+  // Same reasoning as `estimateFuel`: the price on a fuel receipt has three decimals, which is
+  // one more than the euro has. Rounding it before multiplying is what makes a recomputed total
+  // disagree with the printed one.
+  return multiplyDecimalsToMoney(input.pricePerLiter, input.liters, input.currency);
 }
 
 export interface ConsumptionFromRefuelsInput {

@@ -314,6 +314,11 @@ model OrganizationSettings {
   gpsMinDistanceMeters    Int @default(50)
   gpsStaleAfterSeconds    Int @default(180)
 
+  /// Price of a litre of fuel, in the organization's default currency. Null until somebody
+  /// enters one — a fuel *estimate* without a price is arithmetic nobody asked for, so the
+  /// screens show litres and stay silent about money rather than inventing a national average.
+  fuelPricePerLiter Decimal? @db.Decimal(10, 4)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -1112,7 +1117,13 @@ model DriverTrip {
   /// while a trip of theirs is still running.
   positionSessionId String? @unique
 
+  /// The route, when there is one. Optional on purpose: most trips are "went out, came back"
+  /// and forcing a route to be declared before a vehicle may move is how a tracker becomes
+  /// something drivers work around. When it is set, the trip is measured against it.
   label          String?
+  /// The planned distance for that route, in metres. Only ever set alongside a label, and only
+  /// when somebody actually knows it — it is what `distanceMeters` is compared against.
+  plannedDistanceMeters Int?
   startedAt      DateTime?  @db.Timestamptz(6)
   endedAt        DateTime?  @db.Timestamptz(6)
 

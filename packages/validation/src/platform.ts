@@ -54,6 +54,40 @@ export const updateBrandingSchema = z.object({
   customSupportEmail: emailSchema.nullable().optional(),
 });
 
+/**
+ * The settings that change how the product behaves day to day.
+ *
+ * Deliberately narrow. Retention windows and the tenant's own identity are not here: those are
+ * decisions with legal weight or with an audit trail behind them, and this is the screen an
+ * operations manager opens to say what a litre costs this month.
+ *
+ * Every field is optional, and a patch carries only what changed. `fuelPricePerLiter` accepts
+ * null explicitly — clearing it is a real intent ("we no longer want costs estimated"), and is
+ * different from omitting it.
+ */
+export const updateOperationalSettingsSchema = z.object({
+  /** Price of a litre in the organization's default currency, to four decimals. */
+  fuelPricePerLiter: z
+    .string()
+    .trim()
+    .regex(/^\d{1,6}(\.\d{1,4})?$/, 'Expected a price such as 2.45')
+    .refine((value) => Number(value) > 0, 'A price must be greater than zero')
+    .nullable()
+    .optional(),
+  /** False when only a supervisor may open a shift. */
+  allowWorkerSelfShiftStart: z.boolean().optional(),
+  /** After this long, an abandoned shift is auto-closed at the cap rather than left running. */
+  maxShiftDurationMinutes: z.number().int().min(60).max(1440).optional(),
+  /**
+   * The sampling floor handed to driver devices.
+   *
+   * Sent to the client and enforced on ingestion. Tightening it costs battery on every phone in
+   * the fleet, which is why the bounds are narrow rather than free.
+   */
+  gpsMinIntervalSeconds: z.number().int().min(5).max(300).optional(),
+  gpsMinDistanceMeters: z.number().int().min(10).max(2000).optional(),
+});
+
 export const marketQuerySchema = z.object({
   /**
    * A visitor's explicit market choice on the public pricing page. Display only: it is ranked

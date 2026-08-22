@@ -63,19 +63,29 @@ parameter is ignored ([market-pricing.md](market-pricing.md) § 2).
 
 Requires a **worker session**.
 
-| Method | Path                | Permission                   |
-| ------ | ------------------- | ---------------------------- |
-| GET    | `/state`            | `worker.portal.access`       |
-| POST   | `/shift/start`      | `worker.shift.start`         |
-| POST   | `/shift/end`        | `worker.shift.end`           |
-| POST   | `/break/start`      | `worker.break.manage`        |
-| POST   | `/break/end`        | `worker.break.manage`        |
-| POST   | `/position/change`  | `worker.position.change`     |
-| GET    | `/position/history` | `worker.history.read`        |
-| GET    | `/sync/state`       | + `offline.mode` entitlement |
+| Method | Path                      | Permission                   |
+| ------ | ------------------------- | ---------------------------- |
+| GET    | `/state`                  | `worker.portal.access`       |
+| POST   | `/shift/start`            | `worker.shift.start`         |
+| POST   | `/shift/end`              | `worker.shift.end`           |
+| POST   | `/break/start`            | `worker.break.manage`        |
+| POST   | `/break/end`              | `worker.break.manage`        |
+| POST   | `/position/change`        | `worker.position.change`     |
+| GET    | `/position/history`       | `worker.history.read`        |
+| GET    | `/positions/:id/vehicles` | `worker.position.change`     |
+| POST   | `/driving/begin`          | `worker.position.change`     |
+| GET    | `/sync/state`             | + `offline.mode` entitlement |
 
-`/state` returns the worker, their open shift with its current position session and open break,
-and **only the positions they may occupy**.
+`/state` is the whole worker screen in one response: the worker, their open shift with its
+current position and open break, **only the positions they may occupy** — named, with the work
+area each sits in — and `serverTime`.
+
+`serverTime` is not decoration. Every elapsed time the portal renders is measured against it
+rather than against `Date.now()`, so a tablet whose clock is hours out cannot show a shift that
+began a minute ago as having run all morning.
+
+`/shift/start` takes no `siteId`: the site is resolved from the worker's own record. One may
+still be supplied by a terminal fixed to a single entrance.
 
 `/position/change` takes exactly one of `positionId` or `qrToken`.
 
@@ -83,20 +93,72 @@ and **only the positions they may occupy**.
 
 Requires a **driver session** and the `driver.portal` entitlement.
 
-| Method | Path               | Permission                                      |
-| ------ | ------------------ | ----------------------------------------------- |
-| GET    | `/state`           | `driver.portal.access`                          |
-| POST   | `/trip/start`      | `driver.trip.start`                             |
-| POST   | `/trip/:id/pause`  | `driver.trip.pause`                             |
-| POST   | `/trip/:id/resume` | `driver.trip.pause`                             |
-| POST   | `/trip/:id/end`    | `driver.trip.stop`                              |
-| POST   | `/location`        | `driver.location.submit` + `fleet.gps_tracking` |
-| GET    | `/trips`           | `driver.trip.history`                           |
-| GET    | `/trips/:id`       | `driver.trip.history`                           |
+| Method | Path            | Permission                                      |
+| ------ | --------------- | ----------------------------------------------- |
+| GET    | `/state`        | `driver.portal.access`                          |
+| GET    | `/vehicles`     | `driver.vehicle.view`                           |
+| POST   | `/trip/start`   | `driver.trip.start`                             |
+| POST   | `/trip/:id/end` | `driver.trip.stop`                              |
+| POST   | `/location`     | `driver.location.submit` + `fleet.gps_tracking` |
+| GET    | `/trips`        | `driver.trip.history`                           |
+| GET    | `/trips/:id`    | `driver.trip.history`                           |
 
-`/state` returns the assigned vehicle, the active trip, and the sampling policy the device should
-follow. `/location` accepts up to 500 points, rate limited to 120 requests/minute per
-organization.
+**There is no pause, and no `driver.trip.pause` permission.** A trip records from the moment it
+starts until the driver ends it. Pausing let a driver stop the recording, cover a hundred
+kilometres and resume — fuel burned against no trip, and a straight line drawn through the middle
+of the route. Standing still needs no button: a stationary vehicle produces a stop on its own
+track, detected server-side from the points ([tracking.md](tracking.md) § stops).
+
+`/state` returns the assigned vehicle, the active trip, the fuel estimate for the distance so
+far, `serverTime`, and the sampling policy the device should follow. The fuel block is `null`
+unless the vehicle has a recorded consumption; its `cost` is `null` unless the organization has
+entered a fuel price. Neither is ever invented.
+
+`/vehicles` lists what this driver may take right now — active, not held by anyone else, with
+the one they drove last sorted first. `/trip/start` accepts a `vehicleId` from that list when the
+driver holds no assignment; the assignment it creates is automatic and is released when the trip
+ends. A driver who already holds a vehicle drives that one, whatever the body says.
+
+`/trip/start` also accepts an optional `label` (the route) and `plannedDistanceKm`. Both are
+optional — most trips have no route worth declaring — and a planned distance without a label is
+refused, because a number with no route attached cannot be checked later.
+
+`/location` accepts up to 500 points, rate limited to 120 requests/minute per organization.
+
+### Admin portal — `/api/v1/admin`
+
+Requires a **user session**. A worker session elevated for driving is still refused here: a
+management portal is for people, not for a device token.
+
+| Method | Path               | Permission            |
+| ------ | ------------------ | --------------------- |
+| GET    | `/dashboard`       | `reports.read`        |
+| GET    | `/history`         | `shifts.read`         |
+| GET    | `/workers`         | `workers.read`        |
+| POST   | `/workers`         | `workers.create`      |
+| PATCH  | `/workers/:id`     | `workers.update`      |
+| GET    | `/areas`           | `positions.read`      |
+| POST   | `/areas`           | `positions.manage`    |
+| PATCH  | `/areas/:id`       | `positions.manage`    |
+| POST   | `/positions`       | `positions.manage`    |
+| PATCH  | `/positions/:id`   | `positions.manage`    |
+| GET    | `/vehicles`        | `fleet.read`          |
+| POST   | `/vehicles`        | `fleet.create`        |
+| GET    | `/trips`           | `fleet.tracking.read` |
+| GET    | `/trips/:id/track` | `fleet.tracking.read` |
+| GET    | `/branding`        | `branding.read`       |
+| GET    | `/settings`        | `settings.read`       |
+| PATCH  | `/settings`        | `settings.update`     |
+
+`/dashboard` answers "who is working right now" from open position sessions, and reports
+tracking warnings as observations rather than accusations.
+
+`/settings` carries the operational configuration: the fuel price per litre, whether workers may
+open their own shifts, the maximum shift length before an abandoned one is auto-closed, and the
+GPS sampling floor handed to driver devices. `PATCH` applies only the fields the request carries
+— an omitted field is never reset to a default nobody asked for. `fuelPricePerLiter` accepts
+`null` explicitly, which clears it: "we no longer want costs estimated" is a real intent, and it
+is not the same as saying nothing.
 
 ### Health
 

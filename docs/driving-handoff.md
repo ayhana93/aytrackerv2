@@ -165,12 +165,15 @@ writes `driverId` onto it and adds the driving permissions:
 ```
 driver.portal.access
 driver.trip.start
-driver.trip.pause
 driver.trip.stop
 driver.location.submit
 driver.trip.history
 driver.vehicle.view
 ```
+
+Driving elevates the session; it does not hand the worker a control the product no longer has.
+There is no `driver.trip.pause` in this list because there is no pause anywhere — see
+[driver-fleet.md](driver-fleet.md) § 2.
 
 Both are removed when the driving session closes.
 

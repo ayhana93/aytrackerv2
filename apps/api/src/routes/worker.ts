@@ -116,70 +116,186 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
       return reconciled.timestamp;
     }
 
-    /** The worker's current state: open shift, current position, available positions. */
+    /**
+     * The worker's whole screen, in one request.
+     *
+     * Everything the portal renders comes from here and nothing is decided on the device: which
+     * shift is open, when it started, which position they are standing on, which positions they
+     * may move to and what those are called. The portal holds no roster, no position list and no
+     * timer origin of its own — which is what stops it showing a shift that started two hours
+     * ago to somebody who just clocked in.
+     */
     app.get('/state', async (request) => {
       const actor = app.requireAuth(request);
       assertPermission(actor, PERMISSIONS.WORKER_PORTAL_ACCESS);
+      const now = services.clock.now();
 
       const worker = await services.prisma.worker.findFirst({
         where: { id: actor.workerId!, organizationId: actor.organizationId },
-        select: { id: true, firstName: true, lastName: true, siteId: true, preferredLocale: true },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          employeeNumber: true,
+          siteId: true,
+          preferredLocale: true,
+          site: { select: { id: true, name: true } },
+          // A worker may hold more than one driver record over time; only a live one counts.
+          drivers: {
+            where: { deletedAt: null, status: 'ACTIVE' },
+            select: { id: true },
+            take: 1,
+          },
+        },
       });
       if (!worker) throw new ForbiddenError('worker.not_found', 'Worker profile unavailable.');
 
-      const shift = await services.prisma.shift.findFirst({
-        where: {
-          organizationId: actor.organizationId,
-          workerId: actor.workerId!,
-          status: { in: ['ACTIVE', 'ON_BREAK'] },
-        },
-        select: {
-          id: true,
-          status: true,
-          actualStart: true,
-          siteId: true,
-          positionSessions: {
-            where: { endedAt: null },
-            select: { id: true, positionId: true, startedAt: true },
-            take: 1,
+      const [shift, policy] = await Promise.all([
+        services.prisma.shift.findFirst({
+          where: {
+            organizationId: actor.organizationId,
+            workerId: actor.workerId!,
+            status: { in: ['ACTIVE', 'ON_BREAK'] },
           },
-          breaks: {
-            where: { endedAt: null },
-            select: { id: true, startedAt: true, type: true },
-            take: 1,
+          select: {
+            id: true,
+            status: true,
+            actualStart: true,
+            siteId: true,
+            positionSessions: {
+              where: { endedAt: null },
+              select: {
+                id: true,
+                positionId: true,
+                startedAt: true,
+                position: {
+                  select: { name: true, kind: true, workArea: { select: { name: true } } },
+                },
+                driverTrip: { select: { id: true, status: true } },
+              },
+              take: 1,
+            },
+            breaks: {
+              where: { endedAt: null },
+              select: { id: true, startedAt: true, type: true },
+              take: 1,
+            },
           },
-        },
-      });
+        }),
+        services.prisma.organizationSettings.findUnique({
+          where: { organizationId: actor.organizationId },
+          select: { allowWorkerSelfShiftStart: true },
+        }),
+      ]);
 
       const siteId = (shift?.siteId ?? worker.siteId) as SiteId | null;
-      const availablePositions = siteId
+      const eligible = siteId
         ? await services.workforce.listAvailablePositions({
             organizationId: actor.organizationId,
             workerId: actor.workerId as WorkerId,
             siteId,
-            now: services.clock.now(),
+            now,
           })
         : [];
 
+      /**
+       * Eligibility decides *which* positions; this decides what they are called.
+       *
+       * The workforce module answers in ids, because that is the question it is asked. A picker
+       * needs a name and the area it sits in, and one keyed read here beats teaching the
+       * eligibility rules about presentation.
+       */
+      const named =
+        eligible.length > 0
+          ? await services.prisma.position.findMany({
+              where: {
+                organizationId: actor.organizationId,
+                id: { in: eligible.map((entry) => entry.positionId) },
+              },
+              select: {
+                id: true,
+                name: true,
+                code: true,
+                kind: true,
+                workArea: { select: { name: true } },
+              },
+            })
+          : [];
+      const namesById = new Map(named.map((position) => [position.id, position]));
+
+      const currentSession = shift?.positionSessions[0] ?? null;
+
       return {
+        /** Every elapsed time on the worker's screen is measured against this, not the device. */
+        serverTime: now.toISOString(),
         worker: {
           id: worker.id,
           firstName: worker.firstName,
           lastName: worker.lastName,
+          employeeNumber: worker.employeeNumber,
           preferredLocale: worker.preferredLocale,
+          site: worker.site ? { id: worker.site.id, name: worker.site.name } : null,
+          /**
+           * Whether this person is registered as a driver at all.
+           *
+           * The screen uses it to explain a missing driving position rather than leaving a
+           * worker to wonder why "Шофьор" is not in their list.
+           */
+          isDriver: worker.drivers.length > 0,
         },
         shift: shift
           ? {
               id: shift.id,
               status: shift.status,
               actualStart: shift.actualStart?.toISOString() ?? null,
-              currentPositionSession: shift.positionSessions[0] ?? null,
-              openBreak: shift.breaks[0] ?? null,
+              currentPosition: currentSession
+                ? {
+                    sessionId: currentSession.id,
+                    positionId: currentSession.positionId,
+                    name: currentSession.position.name,
+                    kind: currentSession.position.kind,
+                    workArea: currentSession.position.workArea?.name ?? null,
+                    startedAt: currentSession.startedAt.toISOString(),
+                  }
+                : null,
+              openBreak: shift.breaks[0]
+                ? {
+                    id: shift.breaks[0].id,
+                    type: shift.breaks[0].type,
+                    startedAt: shift.breaks[0].startedAt.toISOString(),
+                  }
+                : null,
+              /** Set when this worker is out in a vehicle: the portal hands them to /driver. */
+              activeTripId:
+                currentSession?.driverTrip &&
+                currentSession.driverTrip.status !== 'COMPLETED' &&
+                currentSession.driverTrip.status !== 'CANCELLED'
+                  ? currentSession.driverTrip.id
+                  : null,
             }
           : null,
         // Only positions this worker may actually occupy are sent. An ineligible position never
         // reaches the client, so the picker cannot be tampered with to select one.
-        availablePositions,
+        availablePositions: eligible.flatMap((entry) => {
+          const position = namesById.get(entry.positionId);
+          // A position that vanished between the two reads is simply not offered.
+          if (!position) return [];
+          return [
+            {
+              id: position.id,
+              name: position.name,
+              code: position.code,
+              kind: position.kind,
+              workArea: position.workArea?.name ?? null,
+              requiresApproval: entry.requiresApproval,
+              isCurrent: position.id === currentSession?.positionId,
+            },
+          ];
+        }),
+        policy: {
+          /** False when this organization requires a supervisor to start shifts. */
+          allowWorkerSelfShiftStart: policy?.allowWorkerSelfShiftStart ?? true,
+        },
       };
     });
 
@@ -194,16 +310,37 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
         'worker.shift.start',
         request.body,
         async () => {
-          const policy = await services.prisma.organizationSettings.findUnique({
-            where: { organizationId: actor.organizationId },
-            select: { maxShiftDurationMinutes: true, allowWorkerSelfShiftStart: true },
-          });
+          const [policy, worker] = await Promise.all([
+            services.prisma.organizationSettings.findUnique({
+              where: { organizationId: actor.organizationId },
+              select: { maxShiftDurationMinutes: true, allowWorkerSelfShiftStart: true },
+            }),
+            services.prisma.worker.findFirst({
+              where: { id: actor.workerId!, organizationId: actor.organizationId },
+              select: { siteId: true },
+            }),
+          ]);
+
+          /**
+           * The site comes from the worker unless a terminal named one.
+           *
+           * A worker with no site on their record cannot clock in anywhere, and the honest
+           * answer is that their profile is incomplete — not a validation error about a field
+           * their phone was never going to know.
+           */
+          const siteId = (body.siteId ?? worker?.siteId ?? null) as SiteId | null;
+          if (!siteId) {
+            throw new ForbiddenError(
+              'worker.no_site',
+              'This worker is not assigned to a site. An administrator has to set one.',
+            );
+          }
 
           return services.shifts.startShift(
             {
               organizationId: actor.organizationId,
               workerId: actor.workerId as WorkerId,
-              siteId: body.siteId as SiteId,
+              siteId,
               shiftTypeId: body.shiftTypeId as ShiftTypeId,
               initialPositionId: body.initialPositionId as PositionId | null,
               at: resolveOccurredAt(request, body.occurredAt),

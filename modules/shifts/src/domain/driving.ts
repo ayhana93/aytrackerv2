@@ -186,7 +186,6 @@ export function assertCanEndDriving(input: {
 export const DRIVING_SESSION_PERMISSIONS: readonly string[] = [
   'driver.portal.access',
   'driver.trip.start',
-  'driver.trip.pause',
   'driver.trip.stop',
   'driver.location.submit',
   'driver.trip.history',

@@ -14,6 +14,7 @@ import {
   createVehicleSchema,
   createWorkAreaSchema,
   createWorkerSchema,
+  updateOperationalSettingsSchema,
   updatePositionSchema,
   updateWorkAreaSchema,
   updateWorkerSchema,
@@ -1138,6 +1139,125 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         loginMessage: organization.branding?.loginMessage ?? null,
         customDomain: organization.branding?.customDomain ?? null,
         logoUrl: organization.branding?.logoUrl ?? null,
+      };
+    });
+
+    /* --------------------------------------------------------------- settings */
+
+    /**
+     * The settings that decide how the product behaves for this organization.
+     *
+     * The fuel price is the one that matters most and the one that had nowhere to live: without
+     * it the driver's screen and every cost report can compute litres and nothing else. A
+     * hardcoded national average would have been worse than an empty field — it produces a
+     * number that looks authoritative and is invented.
+     */
+    app.get('/settings', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_READ);
+
+      const [settings, organization] = await Promise.all([
+        services.prisma.organizationSettings.findUnique({
+          where: { organizationId: actor.organizationId },
+          select: {
+            fuelPricePerLiter: true,
+            allowWorkerSelfShiftStart: true,
+            maxShiftDurationMinutes: true,
+            gpsMinIntervalSeconds: true,
+            gpsMinDistanceMeters: true,
+          },
+        }),
+        services.prisma.organization.findUnique({
+          where: { id: actor.organizationId },
+          select: { defaultCurrency: true, defaultTimezone: true },
+        }),
+      ]);
+
+      return {
+        // A Decimal reaching JSON renders as an object; a price has to travel as a string.
+        fuelPricePerLiter: settings?.fuelPricePerLiter?.toString() ?? null,
+        currency: organization?.defaultCurrency ?? 'EUR',
+        timezone: organization?.defaultTimezone ?? 'Europe/Sofia',
+        allowWorkerSelfShiftStart: settings?.allowWorkerSelfShiftStart ?? true,
+        maxShiftDurationMinutes: settings?.maxShiftDurationMinutes ?? 960,
+        gpsMinIntervalSeconds: settings?.gpsMinIntervalSeconds ?? 15,
+        gpsMinDistanceMeters: settings?.gpsMinDistanceMeters ?? 50,
+      };
+    });
+
+    app.patch('/settings', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_UPDATE);
+      const body = updateOperationalSettingsSchema.parse(request.body);
+
+      /**
+       * Upserted, because a settings row may not exist yet.
+       *
+       * Registration creates one, but an organization seeded or imported before it did would
+       * otherwise fail here with a record-not-found on the first save — which reads as "settings
+       * are broken" rather than "there was nothing to update".
+       */
+      const settings = await services.prisma.organizationSettings.upsert({
+        where: { organizationId: actor.organizationId },
+        create: {
+          organizationId: actor.organizationId,
+          ...(body.fuelPricePerLiter !== undefined
+            ? { fuelPricePerLiter: body.fuelPricePerLiter }
+            : {}),
+          ...(body.allowWorkerSelfShiftStart !== undefined
+            ? { allowWorkerSelfShiftStart: body.allowWorkerSelfShiftStart }
+            : {}),
+          ...(body.maxShiftDurationMinutes !== undefined
+            ? { maxShiftDurationMinutes: body.maxShiftDurationMinutes }
+            : {}),
+          ...(body.gpsMinIntervalSeconds !== undefined
+            ? { gpsMinIntervalSeconds: body.gpsMinIntervalSeconds }
+            : {}),
+          ...(body.gpsMinDistanceMeters !== undefined
+            ? { gpsMinDistanceMeters: body.gpsMinDistanceMeters }
+            : {}),
+        },
+        // Only what the request carried. A patch that omits a field must not reset it to a
+        // default the caller never mentioned.
+        update: {
+          ...(body.fuelPricePerLiter !== undefined
+            ? { fuelPricePerLiter: body.fuelPricePerLiter }
+            : {}),
+          ...(body.allowWorkerSelfShiftStart !== undefined
+            ? { allowWorkerSelfShiftStart: body.allowWorkerSelfShiftStart }
+            : {}),
+          ...(body.maxShiftDurationMinutes !== undefined
+            ? { maxShiftDurationMinutes: body.maxShiftDurationMinutes }
+            : {}),
+          ...(body.gpsMinIntervalSeconds !== undefined
+            ? { gpsMinIntervalSeconds: body.gpsMinIntervalSeconds }
+            : {}),
+          ...(body.gpsMinDistanceMeters !== undefined
+            ? { gpsMinDistanceMeters: body.gpsMinDistanceMeters }
+            : {}),
+        },
+        select: {
+          fuelPricePerLiter: true,
+          allowWorkerSelfShiftStart: true,
+          maxShiftDurationMinutes: true,
+          gpsMinIntervalSeconds: true,
+          gpsMinDistanceMeters: true,
+        },
+      });
+
+      const organization = await services.prisma.organization.findUnique({
+        where: { id: actor.organizationId },
+        select: { defaultCurrency: true, defaultTimezone: true },
+      });
+
+      return {
+        fuelPricePerLiter: settings.fuelPricePerLiter?.toString() ?? null,
+        currency: organization?.defaultCurrency ?? 'EUR',
+        timezone: organization?.defaultTimezone ?? 'Europe/Sofia',
+        allowWorkerSelfShiftStart: settings.allowWorkerSelfShiftStart,
+        maxShiftDurationMinutes: settings.maxShiftDurationMinutes,
+        gpsMinIntervalSeconds: settings.gpsMinIntervalSeconds,
+        gpsMinDistanceMeters: settings.gpsMinDistanceMeters,
       };
     });
   };

@@ -16,19 +16,39 @@ import {
  * hold, however the request is constructed.
  */
 
-export const startTripSchema = z.object({
-  clientActionId: clientActionIdSchema,
-  label: z.string().trim().max(160).nullable().default(null),
-  startLatitude: latitudeSchema.nullable().default(null),
-  startLongitude: longitudeSchema.nullable().default(null),
-  startOdometer: nonNegativeDecimalStringSchema.nullable().default(null),
-  occurredAt: isoDateTimeSchema.optional(),
-});
-
-export const tripActionSchema = z.object({
-  clientActionId: clientActionIdSchema,
-  occurredAt: isoDateTimeSchema.optional(),
-});
+/**
+ * Starting a trip.
+ *
+ * `label` and `plannedDistanceKm` are the route, and both are optional. A driver who has to
+ * leave now presses one button; a dispatcher who knows the run declares it and the trip is then
+ * measured against what was planned. Neither is a precondition for recording.
+ *
+ * The planned distance is refused without a label, because a number with no route attached is
+ * a figure nobody can check later.
+ */
+export const startTripSchema = z
+  .object({
+    clientActionId: clientActionIdSchema,
+    label: z.string().trim().max(160).nullable().default(null),
+    /** Kilometres, as typed. Converted to metres by the route — the domain stores metres. */
+    plannedDistanceKm: z.number().positive().max(20_000).nullable().default(null),
+    /**
+     * The vehicle the driver picked.
+     *
+     * Only consulted when the driver holds no assignment. It is a choice from a list the server
+     * produced, not an instruction: a vehicle the driver may not take is refused here exactly as
+     * it would be if they had never been shown it.
+     */
+    vehicleId: uuidSchema.nullable().default(null),
+    startLatitude: latitudeSchema.nullable().default(null),
+    startLongitude: longitudeSchema.nullable().default(null),
+    startOdometer: nonNegativeDecimalStringSchema.nullable().default(null),
+    occurredAt: isoDateTimeSchema.optional(),
+  })
+  .refine((value) => value.plannedDistanceKm === null || Boolean(value.label), {
+    message: 'A planned distance needs a route to belong to',
+    path: ['plannedDistanceKm'],
+  });
 
 export const endTripSchema = z.object({
   clientActionId: clientActionIdSchema,

@@ -274,6 +274,23 @@ describe('session elevation', () => {
     expect(elevated).toContain('worker.position.change');
   });
 
+  /**
+   * Driving elevates a worker's session; it does not hand them a control the product no longer
+   * has. Pausing let a driver stop the recording, cover a hundred kilometres and resume — fuel
+   * burned against no trip, and a straight line drawn across the route.
+   */
+  it('never grants the ability to pause a running trip', () => {
+    expect(DRIVING_SESSION_PERMISSIONS).not.toContain('driver.trip.pause');
+    expect(withDrivingPermissions(BASE)).not.toContain('driver.trip.pause');
+  });
+
+  it('still grants starting and stopping, which is the whole of a driver’s control', () => {
+    const elevated = withDrivingPermissions(BASE);
+    expect(elevated).toContain('driver.trip.start');
+    expect(elevated).toContain('driver.trip.stop');
+    expect(elevated).toContain('driver.location.submit');
+  });
+
   it('does not duplicate a permission the session already carried', () => {
     const elevated = withDrivingPermissions([...BASE, 'driver.portal.access']);
     expect(elevated.filter((p) => p === 'driver.portal.access')).toHaveLength(1);

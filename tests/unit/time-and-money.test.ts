@@ -8,6 +8,7 @@ import {
   localMinuteOfDay,
   mergedIntervalSeconds,
   money,
+  multiplyDecimalsToMoney,
   multiplyMoney,
   subtractMoney,
   sumMoney,
@@ -57,6 +58,29 @@ describe('money', () => {
     expect(multiplyMoney(money('100', 'EUR'), '0.195').amount).toBe('19.50');
     // Exact half rounds away from zero.
     expect(multiplyMoney(money('0.05', 'EUR'), '0.5').amount).toBe('0.03');
+  });
+
+  /**
+   * `multiplyDecimalsToMoney` exists for the case `multiplyMoney` cannot serve: a unit price
+   * carrying more decimals than the currency does. Rounding it to the minor unit first is
+   * rounding the wrong number, and the error scales with the quantity.
+   */
+  it('multiplies two exact decimals and rounds only the result', () => {
+    // 8.4 L × 1.759 = 14.7756 → 14.78. Rounding the price to 1.76 first gives 14.78 too, but…
+    expect(multiplyDecimalsToMoney('1.759', '8.4', 'EUR').amount).toBe('14.78');
+    // …at four hundred litres the two answers are a euro apart: 703.60 versus 704.00.
+    expect(multiplyDecimalsToMoney('1.759', '400', 'EUR').amount).toBe('703.60');
+    expect(multiplyMoney(money('1.76', 'EUR'), '400').amount).toBe('704.00');
+  });
+
+  it('accepts a price the currency itself could not hold', () => {
+    // `money('0.2148', 'EUR')` throws; a kWh price with four decimals is ordinary.
+    expect(multiplyDecimalsToMoney('0.2148', '1250', 'EUR').amount).toBe('268.50');
+  });
+
+  it('rounds a decimal product half away from zero', () => {
+    expect(multiplyDecimalsToMoney('0.005', '1', 'EUR').amount).toBe('0.01');
+    expect(multiplyDecimalsToMoney('-0.005', '1', 'EUR').amount).toBe('-0.01');
   });
 
   it('handles zero-decimal currencies', () => {

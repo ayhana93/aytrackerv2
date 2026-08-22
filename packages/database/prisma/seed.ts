@@ -1071,12 +1071,24 @@ async function main(): Promise<void> {
   await seedPrices();
   await seedSystemRoles();
 
-  const seedDemo = process.env['SEED_DEMO'] !== 'false' && process.env['NODE_ENV'] !== 'production';
-  if (seedDemo) {
+  /**
+   * The demo factory is opt-in, and has to stay that way.
+   *
+   * It used to be opt-out, guarded by `NODE_ENV !== 'production'`. That guard reads as safe and
+   * is not: `NODE_ENV` is frequently unset on a platform that builds and runs from the same
+   * image, and a seed run against a real database then invented Иван, five positions and three
+   * vans inside a customer's account. Somebody who has entered no vehicles at all should never
+   * see a Ford Transit — and no amount of "it's only a demo" makes that anything other than
+   * fabricated data in a live tenant.
+   *
+   * So it now takes an explicit `SEED_DEMO=true`. Forgetting it costs a developer one flag;
+   * forgetting the old one cost a customer their trust in every number on the screen.
+   */
+  if (process.env['SEED_DEMO'] === 'true') {
     console.log('Seeding demo organization…');
     await seedDemoOrganization();
   } else {
-    console.log('Skipping demo organization (production or SEED_DEMO=false).');
+    console.log('Skipping demo organization. Set SEED_DEMO=true to seed it.');
   }
 
   console.log('Seed complete.');

@@ -1,13 +1,9 @@
 import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
+import { ConflictError, NotFoundError } from '@aytracker/domain';
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
 import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
-import type {
-  AcceptedLocationPoint,
-  PauseInterval,
-  TripState,
-  TripStatus,
-} from '../domain/trip.js';
+import type { AcceptedLocationPoint, PauseInterval, TripState } from '../domain/trip.js';
 import type {
   DriverTransactionRunner,
   DriverUnitOfWork,
@@ -54,6 +50,7 @@ export class PrismaTripRepository implements TripRepository {
     driverId: DriverId;
     vehicleId: VehicleId;
     label: string | null;
+    plannedDistanceMeters: number | null;
     startedAt: Date;
     startLatitude: number | null;
     startLongitude: number | null;
@@ -65,6 +62,7 @@ export class PrismaTripRepository implements TripRepository {
         driverId: input.driverId,
         vehicleId: input.vehicleId,
         label: input.label,
+        plannedDistanceMeters: input.plannedDistanceMeters,
         status: 'ACTIVE',
         startedAt: input.startedAt,
         startLatitude: input.startLatitude,
@@ -75,18 +73,6 @@ export class PrismaTripRepository implements TripRepository {
       select: TRIP_SELECT,
     });
     return trip as TripState;
-  }
-
-  async updateStatus(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    status: TripStatus;
-    trackingState: TrackingState;
-  }): Promise<void> {
-    await this.db.driverTrip.updateMany({
-      where: { id: input.tripId, organizationId: input.organizationId },
-      data: { status: input.status, trackingState: input.trackingState },
-    });
   }
 
   async close(input: {
@@ -376,6 +362,86 @@ export class PrismaDriverVehicleAccess implements DriverVehicleAccess {
     await this.db.vehicle.updateMany({
       where: { id: input.vehicleId, organizationId: input.organizationId },
       data: { odometerCurrent: input.odometer },
+    });
+  }
+
+  /**
+   * Takes a vehicle for a trip.
+   *
+   * The application check below is for the error message; the decision belongs to
+   * `vehicle_assignments_one_open_per_vehicle`. Two drivers tapping the same van at 06:00 both
+   * pass this read and exactly one survives the unique index, which is the only version of this
+   * that is actually correct under concurrency.
+   */
+  async claimForTrip(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    at: Date;
+  }): Promise<void> {
+    const vehicle = await this.db.vehicle.findFirst({
+      where: { id: input.vehicleId, organizationId: input.organizationId, deletedAt: null },
+      select: { status: true },
+    });
+    if (!vehicle) {
+      throw new NotFoundError('vehicle.not_found', 'Vehicle not found.');
+    }
+    if (vehicle.status !== 'ACTIVE') {
+      throw new ConflictError(
+        'driving.vehicle_not_available',
+        `Vehicle is ${vehicle.status.toLowerCase().replace(/_/g, ' ')}.`,
+        { details: { status: vehicle.status } },
+      );
+    }
+
+    const held = await this.db.vehicleAssignment.findFirst({
+      where: { organizationId: input.organizationId, vehicleId: input.vehicleId, endedAt: null },
+      select: { driverId: true },
+    });
+    if (held && held.driverId !== input.driverId) {
+      throw new ConflictError(
+        'driving.vehicle_taken',
+        'This vehicle is currently assigned to another driver.',
+      );
+    }
+    if (held) return;
+
+    // A violation here is translated by `@aytracker/database` into
+    // `fleet.vehicle_already_assigned` or `fleet.driver_already_assigned`, which is what the
+    // driver is told. Nothing catches it locally, because there is nothing better to say.
+    await this.db.vehicleAssignment.create({
+      data: {
+        organizationId: input.organizationId,
+        driverId: input.driverId,
+        vehicleId: input.vehicleId,
+        startedAt: input.at,
+        isAutomatic: true,
+      },
+    });
+  }
+
+  /**
+   * Hands back an assignment this module created.
+   *
+   * Scoped to `isAutomatic`, which is the whole point of that column: a fleet manager who
+   * assigned a van to a driver for the month does not lose that because the driver finished a
+   * trip on a Tuesday.
+   */
+  async releaseAutomatic(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    endedAt: Date;
+  }): Promise<void> {
+    await this.db.vehicleAssignment.updateMany({
+      where: {
+        organizationId: input.organizationId,
+        driverId: input.driverId,
+        vehicleId: input.vehicleId,
+        endedAt: null,
+        isAutomatic: true,
+      },
+      data: { endedAt: input.endedAt },
     });
   }
 }
