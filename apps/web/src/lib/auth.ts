@@ -14,7 +14,10 @@ export interface MeResponse {
   readonly organizationId: string;
   /** What a worker or driver types on their own login screen. */
   readonly organizationSlug: string | null;
+  /** What the organization is called on screen — its branding name, or its registered one. */
   readonly organizationName: string | null;
+  /** The organization's chosen logo, or null when it has none and the monogram stands in. */
+  readonly organizationLogoUrl: string | null;
   readonly userId: string | null;
   readonly permissions: readonly string[];
   readonly features: readonly string[];
