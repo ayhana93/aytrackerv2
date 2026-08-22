@@ -267,6 +267,94 @@ export interface UpdateSettingsInput {
   readonly gpsMinDistanceMeters?: number;
 }
 
+/**
+ * One person or vehicle currently being tracked.
+ *
+ * Everything here is the server's: the state, the speed, how stale the last fix is. The browser
+ * places a marker and renders a label — it does not decide whether somebody counts as "live".
+ */
+export interface LiveSubject {
+  readonly id: string;
+  readonly context: 'WORK' | 'DRIVER_TRIP';
+  readonly name: string;
+  readonly employeeNumber: string | null;
+  readonly position: string | null;
+  readonly onBreak: boolean;
+  readonly startedAt: string;
+  readonly distanceMeters: number;
+  readonly trackingState: string;
+  readonly lastPointAt: string | null;
+  readonly secondsSinceFix: number | null;
+  readonly latitude: number | null;
+  readonly longitude: number | null;
+  readonly speedKph: number | null;
+  readonly accuracyMeters: number | null;
+  readonly batteryLevel: number | null;
+  readonly devicePermission: string | null;
+  readonly vehicle: {
+    readonly registrationNumber: string;
+    readonly make: string;
+    readonly model: string;
+  } | null;
+  readonly trip: {
+    readonly id: string;
+    readonly label: string | null;
+    readonly startedAt: string | null;
+    readonly distanceMeters: number;
+  } | null;
+  /**
+   * Whether the position is the vehicle's or the phone's.
+   *
+   * A phone in a driver's pocket is not the van. Saying which is which is the difference between
+   * a fact and an assumption somebody will act on.
+   */
+  readonly positionSource: 'DEVICE';
+}
+
+export interface LiveResponse {
+  readonly serverTime: string;
+  readonly subjects: readonly LiveSubject[];
+}
+
+/** One employee's day: the working route, with the driver trips inside it marked. */
+export interface LiveTrackResponse {
+  readonly session: {
+    readonly id: string;
+    readonly context: 'WORK' | 'DRIVER_TRIP';
+    readonly worker: string | null;
+    readonly startedAt: string;
+    readonly endedAt: string | null;
+    readonly distanceMeters: number;
+    readonly untrackedSeconds: number;
+  };
+  readonly track: {
+    readonly points: readonly { latitude: number; longitude: number }[];
+    readonly distanceMeters: number;
+    readonly gapAfterIndices: readonly number[];
+    readonly pointCount: number;
+  };
+  readonly segments: readonly {
+    readonly context: 'WORK' | 'DRIVER_TRIP';
+    readonly tripId: string | null;
+    readonly from: string;
+    readonly to: string;
+    readonly pointCount: number;
+  }[];
+  readonly stops: readonly {
+    readonly latitude: number;
+    readonly longitude: number;
+    readonly startedAt: string;
+    readonly endedAt: string;
+    readonly seconds: number;
+  }[];
+  readonly gaps: readonly {
+    readonly startedAt: string;
+    readonly endedAt: string | null;
+    readonly seconds: number;
+    readonly isOpen: boolean;
+  }[];
+}
+
 export interface BrandingResponse {
   readonly companyName: string;
   readonly slug: string;
@@ -286,6 +374,9 @@ export const adminApi = {
     apiRequest<{ trips: TripRow[] }>('/admin/trips', { query }),
   track: (tripId: string) => apiRequest<TrackResponse>(`/admin/trips/${tripId}/track`),
   branding: () => apiRequest<BrandingResponse>('/admin/branding'),
+
+  live: () => apiRequest<LiveResponse>('/admin/live'),
+  liveTrack: (sessionId: string) => apiRequest<LiveTrackResponse>(`/admin/live/${sessionId}/track`),
 
   settings: () => apiRequest<SettingsResponse>('/admin/settings'),
   updateSettings: (body: UpdateSettingsInput) =>

@@ -9,6 +9,7 @@ import {
   IconDashboard,
   IconFleet,
   IconHistory,
+  IconLive,
   IconPeople,
   IconRoute,
   IconSettings,
@@ -34,7 +35,12 @@ interface Entry {
   readonly icon: ReactNode;
 }
 
-const OVERVIEW: readonly Entry[] = [{ href: '/admin', label: 'Табло', icon: IconDashboard }];
+const OVERVIEW: readonly Entry[] = [
+  { href: '/admin', label: 'Табло', icon: IconDashboard },
+  // Directly under the dashboard: "where is everyone right now" is the question this product is
+  // opened for, and it should never be more than one click away.
+  { href: '/admin/live', label: 'На живо', icon: IconLive },
+];
 
 const PEOPLE: readonly Entry[] = [
   { href: '/admin/people', label: 'На смяна', icon: IconPeople },

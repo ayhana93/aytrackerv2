@@ -15,8 +15,17 @@ import {
   TabBar,
   ThemeToggle,
 } from '@aytracker/ui';
+import { TrackingIndicator } from '@aytracker/ui';
+import type { BackgroundCapability, CollectorStatus } from '@aytracker/tracking-client';
+import type { TrackingState } from '@aytracker/tracking';
 import { ApiError } from '../../lib/api';
 import { authApi } from '../../lib/auth';
+import {
+  BACKGROUND_NOTICE,
+  requestLocationPermission,
+  useCapabilities,
+  useTrackingCollector,
+} from '../../lib/tracking';
 import {
   workerApi,
   type AvailablePosition,
@@ -68,6 +77,21 @@ export default function WorkerPortalPage() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const clock = useServerClock(state?.serverTime ?? null);
+  const capability = useCapabilities();
+
+  /**
+   * The working day's recording, for exactly as long as the shift is open.
+   *
+   * There is no switch on this screen. The session id appears when the worker clocks in and
+   * disappears when they clock out, and the collector's lifetime is that id — so "tracking only
+   * during working time" is a consequence of the data rather than a promise about the UI. The
+   * server refuses points either side of it in any case.
+   */
+  const trackingStatus = useTrackingCollector(
+    state?.tracking?.sessionId ?? null,
+    state?.tracking?.samplingPolicy ?? null,
+    { holdScreenAwake: true },
+  );
 
   const reload = useCallback(async () => {
     try {
@@ -88,6 +112,20 @@ export default function WorkerPortalPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  /**
+   * While a shift is open, ask the server again every half minute.
+   *
+   * Distance is computed there, from the points the collector uploaded — never in the browser
+   * from what it happens to have seen. Half a minute rather than fifteen seconds because this
+   * screen sits in a pocket all day and the number moves slowly.
+   */
+  const trackingSessionId = state?.tracking?.sessionId ?? null;
+  useEffect(() => {
+    if (!trackingSessionId) return;
+    const timer = setInterval(() => void reload(), 30_000);
+    return () => clearInterval(timer);
+  }, [trackingSessionId, reload]);
 
   /**
    * Runs an action, then re-reads the state it changed.
@@ -260,7 +298,22 @@ export default function WorkerPortalPage() {
             state={state}
             now={clock}
             busy={busy}
-            onStartShift={() => void run(() => workerApi.startShift({}))}
+            capability={capability}
+            tracking={trackingStatus}
+            onStartShift={() =>
+              void run(async () => {
+                /*
+                 * Ask for location before clocking in, from the tap itself.
+                 *
+                 * Browsers only prompt from a gesture, so this is the one moment the permission
+                 * dialog can be raised. A refusal does not block the shift — the hours are the
+                 * point and the route is the extra — but the screen then says so plainly rather
+                 * than showing a recording indicator that means nothing.
+                 */
+                await requestLocationPermission();
+                await workerApi.startShift({});
+              })
+            }
             onEndShift={() => void run(() => workerApi.endShift())}
             onChangePosition={() => setScreen('positions')}
             onBreak={() => setBreakOpen(true)}
@@ -329,10 +382,21 @@ export default function WorkerPortalPage() {
 
 /* ------------------------------------------------------------------- home */
 
+const TRACKING_LABELS: Readonly<Record<TrackingState, string>> = {
+  ACTIVE: 'Записва се',
+  DEGRADED: 'Слаб сигнал',
+  PAUSED: 'На пауза',
+  INTERRUPTED: 'Няма данни в момента',
+  OFFLINE: 'Офлайн — точките се пазят',
+  STOPPED: 'Спряно',
+};
+
 function HomeScreen({
   state,
   now,
   busy,
+  capability,
+  tracking,
   onStartShift,
   onEndShift,
   onChangePosition,
@@ -342,6 +406,8 @@ function HomeScreen({
   state: WorkerState;
   now: () => number;
   busy: boolean;
+  capability: BackgroundCapability | null;
+  tracking: CollectorStatus | null;
   onStartShift: () => void;
   onEndShift: () => void;
   onChangePosition: () => void;
@@ -365,7 +431,9 @@ function HomeScreen({
         ) : null}
       </div>
 
-      {shift === null ? <NoShift state={state} busy={busy} onStartShift={onStartShift} /> : null}
+      {shift === null ? (
+        <NoShift state={state} busy={busy} capability={capability} onStartShift={onStartShift} />
+      ) : null}
 
       {shift !== null ? (
         <>
@@ -377,6 +445,15 @@ function HomeScreen({
             value={elapsed(shift.openBreak?.startedAt ?? shift.actualStart, now())}
             caption={shift.openBreak ? 'време на почивката' : undefined}
           />
+
+          {state.tracking ? (
+            <TrackingCard
+              tracking={tracking}
+              capability={capability}
+              serverState={state.tracking.trackingState}
+              distanceMeters={state.tracking.distanceMeters}
+            />
+          ) : null}
 
           {shift.activeTripId ? (
             <Card>
@@ -433,13 +510,74 @@ function HomeScreen({
  * company whose administrator has not created any zones yet, and saying so is the difference
  * between a support call and someone finishing their setup.
  */
+/**
+ * What is actually being recorded, said plainly.
+ *
+ * A worker must never have to guess whether their day is being tracked. The state shown is the
+ * device's when the device knows better — the server's `trackingState` lags by up to a batch, and
+ * telling somebody in a basement that everything is fine is exactly the uncertainty that turns a
+ * missing hour into an argument at the end of the week.
+ *
+ * Nothing here asserts intent. "Няма данни в момента" covers a tunnel, a flat battery and a
+ * force-quit equally, because from this screen they are the same thing.
+ */
+function TrackingCard({
+  tracking,
+  capability,
+  serverState,
+  distanceMeters,
+}: {
+  tracking: CollectorStatus | null;
+  capability: BackgroundCapability | null;
+  serverState: string;
+  distanceMeters: number;
+}) {
+  const state: TrackingState =
+    tracking && tracking.state !== 'STOPPED' ? tracking.state : (serverState as TrackingState);
+  const denied = tracking?.permission === 'denied';
+
+  return (
+    <Card>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 'var(--ay-space-3)',
+        }}
+      >
+        <TrackingIndicator state={state} label={TRACKING_LABELS[state]} />
+        <span className="ay-small ay-numeric ay-muted">
+          {(distanceMeters / 1000).toFixed(1)} км днес
+        </span>
+      </div>
+
+      <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-3)' }}>
+        {denied
+          ? 'Достъпът до местоположението е отказан. Часовете се отчитат, но маршрутът — не. Разреши го от настройките на телефона.'
+          : capability
+            ? BACKGROUND_NOTICE[capability]
+            : ' '}
+      </p>
+
+      {tracking && tracking.queuedPoints > 0 ? (
+        <p className="ay-caption ay-muted">
+          {tracking.queuedPoints} точки чакат връзка. Нищо не се губи.
+        </p>
+      ) : null}
+    </Card>
+  );
+}
+
 function NoShift({
   state,
   busy,
+  capability,
   onStartShift,
 }: {
   state: WorkerState;
   busy: boolean;
+  capability: BackgroundCapability | null;
   onStartShift: () => void;
 }) {
   const blocked = !state.policy.allowWorkerSelfShiftStart;
@@ -455,10 +593,36 @@ function NoShift({
         </p>
       </Card>
 
+      {/*
+        Said before the permission dialog appears, not after.
+        A prompt with no explanation in front of it is the thing people decline by reflex — and a
+        declined permission is a working day with no route in it.
+      */}
       {blocked ? null : (
-        <Button block size="large" disabled={busy} onClick={onStartShift}>
-          ▶ Започни смяна
-        </Button>
+        <>
+          <Card>
+            <p className="ay-overline ay-muted">Местоположение</p>
+            <p className="ay-small" style={{ marginTop: 'var(--ay-space-2)' }}>
+              По време на работа AYtracker записва къде си, за да се отчитат часовете, маршрутите и
+              използването на служебните автомобили.
+            </p>
+            <ul
+              className="ay-caption ay-muted"
+              style={{ marginTop: 'var(--ay-space-3)', paddingLeft: '1.1rem' }}
+            >
+              <li>Записът започва, когато натиснеш „Започни смяна“.</li>
+              <li>Спира в момента, в който приключиш смяната.</li>
+              <li>Извън смяна нищо не се записва.</li>
+            </ul>
+            <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-3)' }}>
+              {capability ? BACKGROUND_NOTICE[capability] : ' '}
+            </p>
+          </Card>
+
+          <Button block size="large" disabled={busy} onClick={onStartShift}>
+            ▶ Започни смяна
+          </Button>
+        </>
       )}
 
       {state.availablePositions.length === 0 ? (

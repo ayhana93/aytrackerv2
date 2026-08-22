@@ -76,11 +76,17 @@ export function trackingRoutes(services: AppServices): FastifyPluginAsync {
         assertPermission(actor, PERMISSIONS.TRACKING_SUBMIT);
         const body = submitTrackingPointsSchema.parse(request.body);
 
-        const sessionId = await resolveSession(
-          actor.organizationId,
-          (actor.workerId as WorkerId | undefined) ?? null,
-          (actor.driverId as DriverId | undefined) ?? null,
-        );
+        const [sessionId, settings] = await Promise.all([
+          resolveSession(
+            actor.organizationId,
+            (actor.workerId as WorkerId | undefined) ?? null,
+            (actor.driverId as DriverId | undefined) ?? null,
+          ),
+          services.prisma.organizationSettings.findUnique({
+            where: { organizationId: actor.organizationId },
+            select: { gpsMinIntervalSeconds: true },
+          }),
+        ]);
         if (!sessionId) {
           /**
            * No session, no collection. This is the privacy rule at the edge.
@@ -106,6 +112,13 @@ export function trackingRoutes(services: AppServices): FastifyPluginAsync {
             permission: body.permission,
           },
           now: services.clock.now(),
+          /**
+           * The same floor `/tracking/state` tells the device to sample at. Read here rather
+           * than assumed, because an organization may configure a finer interval than the
+           * default and a hard-coded floor would then quietly discard points it asked for.
+           */
+          minIntervalSeconds:
+            settings?.gpsMinIntervalSeconds ?? DEFAULT_SAMPLING_POLICY.minIntervalSeconds,
         });
       },
     );

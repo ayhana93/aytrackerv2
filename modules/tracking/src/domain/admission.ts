@@ -13,8 +13,10 @@ import { assertSessionOpen, tripForTimestamp, type TrackingSessionState } from '
  *   * **The session must be open.** No point is stored against a closed or missing session —
  *     "no collection outside an authorised context" is a privacy promise, so it is enforced at
  *     ingestion rather than trusted to the client that made the promise.
- *   * **Timestamps are clamped into the session window.** A device with a wrong clock cannot
- *     write points into yesterday, or into a shift that has not started.
+ *   * **Timestamps outside the session window are refused, not moved.** A device with a wrong
+ *     clock cannot write points into yesterday, or into a shift that has not started. Only skew
+ *     small enough to be a clock artefact is corrected; anything further out is dropped, because
+ *     a fix dragged to a time the device never claimed is a fabricated fix.
  *   * **Coordinates are validated.** A malformed pair is dropped rather than stored and filtered
  *     later, because a NaN in a Decimal column outlives every reader that would have to guard
  *     against it.
@@ -25,6 +27,20 @@ import { assertSessionOpen, tripForTimestamp, type TrackingSessionState } from '
  */
 
 export const MAX_LOCATION_BATCH_SIZE = 500;
+
+/**
+ * How far a fix may sit outside the session window and still be treated as a clock artefact.
+ *
+ * Phone clocks drift, and a fix acquired in the second before the shift record was written can
+ * legitimately carry a timestamp a moment before the session began. Two minutes covers that.
+ *
+ * It deliberately does not cover more. A point an hour in the future, or from a shift that ended
+ * yesterday, is not evidence about this session: pulling it to the nearest edge of the window
+ * would place the employee somewhere they were not, at a time they were not there, and the
+ * distance and the route would then both be wrong. Such a point is dropped and counted, so the
+ * response says how many were refused instead of quietly inventing them.
+ */
+export const CLOCK_SKEW_TOLERANCE_SECONDS = 120;
 
 export interface RawLocationPoint {
   readonly timestamp: Date;
@@ -78,6 +94,7 @@ export function admitPoints(input: {
 
   const windowStart = session.startedAt.getTime();
   const windowEnd = input.now.getTime();
+  const tolerance = CLOCK_SKEW_TOLERANCE_SECONDS * 1000;
 
   const accepted: AdmittedLocationPoint[] = [];
   let rejected = 0;
@@ -98,11 +115,16 @@ export function admitPoints(input: {
     }
 
     let timestamp = point.timestamp;
-    if (timestamp.getTime() < windowStart) {
+    const at = timestamp.getTime();
+    if (at < windowStart - tolerance || at > windowEnd + tolerance) {
+      // Too far out to be clock drift: this fix is not evidence about this session.
+      rejected += 1;
+      continue;
+    }
+    if (at < windowStart) {
       timestamp = new Date(windowStart);
       clamped += 1;
-    } else if (timestamp.getTime() > windowEnd) {
-      // A point from the future is a clock-skew artefact, not evidence of anything.
+    } else if (at > windowEnd) {
       timestamp = new Date(windowEnd);
       clamped += 1;
     }

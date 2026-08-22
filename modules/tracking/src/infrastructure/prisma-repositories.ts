@@ -388,6 +388,23 @@ export class PrismaTripWindowAccess implements TripWindowAccess {
     });
     return trip ?? null;
   }
+
+  async updateLiveMetrics(input: {
+    organizationId: OrganizationId;
+    tripId: string;
+    distanceMeters: number;
+    lastPointAt: Date;
+    trackingState: TrackingState;
+  }): Promise<void> {
+    await this.db.driverTrip.updateMany({
+      where: { id: input.tripId, organizationId: input.organizationId },
+      data: {
+        distanceMeters: input.distanceMeters,
+        lastPointAt: input.lastPointAt,
+        trackingState: input.trackingState,
+      },
+    });
+  }
 }
 
 export class PrismaTrackingTransactionRunner implements TrackingTransactionRunner {

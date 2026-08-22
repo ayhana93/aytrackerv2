@@ -124,12 +124,32 @@ export interface TrackingEventRepository {
   ): Promise<TrackingState | null>;
 }
 
-/** Resolves the trip a session's points may currently be attributed to. */
+/**
+ * The trip a session's points may currently be attributed to, and its running totals.
+ *
+ * The trip row carries its own live distance because that is what the driver's screen and the
+ * admin trip list read — one indexed row rather than a scan of the day's points. Keeping it
+ * current is this module's job now, since this module is the only thing that writes points.
+ */
 export interface TripWindowAccess {
   openTripForSession(
     organizationId: OrganizationId,
     session: TrackingSessionState,
   ): Promise<TripWindow | null>;
+
+  /**
+   * Refreshes a trip's running numbers from the points tagged with it.
+   *
+   * Recomputed rather than accumulated: a batch that arrives after an offline stretch can land
+   * out of order, and adding to a running total would bake that in permanently.
+   */
+  updateLiveMetrics(input: {
+    organizationId: OrganizationId;
+    tripId: string;
+    distanceMeters: number;
+    lastPointAt: Date;
+    trackingState: TrackingState;
+  }): Promise<void>;
 }
 
 export interface TrackingUnitOfWork {

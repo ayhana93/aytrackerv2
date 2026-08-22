@@ -69,7 +69,7 @@ export class NativeLocationCollector implements LocationCollector {
     }
 
     await bridge.start({
-      tripId: this.options.tripId,
+      sessionId: this.options.sessionId,
       minIntervalSeconds: this.options.minIntervalSeconds,
       minDistanceMeters: this.options.minDistanceMeters,
     });
@@ -89,7 +89,7 @@ export class NativeLocationCollector implements LocationCollector {
     await window.AYtrackerNative?.stop();
     await this.drain();
     await this.flush();
-    await this.queue.clear(this.options.tripId);
+    await this.queue.clear(this.options.sessionId);
     this.update({ state: 'STOPPED' });
   }
 
@@ -124,7 +124,7 @@ export class NativeLocationCollector implements LocationCollector {
     const queued = points.map((point) => {
       this.seq += 1;
       return {
-        tripId: this.options.tripId,
+        sessionId: this.options.sessionId,
         seq: this.seq,
         timestamp: point.timestamp,
         latitude: point.latitude,

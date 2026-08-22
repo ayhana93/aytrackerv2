@@ -15,16 +15,11 @@ import {
   ThemeToggle,
   TrackingIndicator,
 } from '@aytracker/ui';
-import {
-  createLocationCollector,
-  detectCapabilities,
-  type BackgroundCapability,
-  type CollectorStatus,
-  type LocationCollector,
-} from '@aytracker/tracking-client';
+import type { BackgroundCapability, CollectorStatus } from '@aytracker/tracking-client';
 import type { TrackingState } from '@aytracker/tracking';
 import { ApiError } from '../../lib/api';
 import { authApi } from '../../lib/auth';
+import { useCapabilities, useTrackingCollector } from '../../lib/tracking';
 import {
   currentPosition,
   driverApi,
@@ -126,7 +121,17 @@ export default function DriverPortalPage() {
     return () => clearInterval(timer);
   }, [tripId, reload]);
 
-  const collectorStatus = useCollector(tripId, state?.samplingPolicy ?? null);
+  /**
+   * One collector, shared with the worker portal.
+   *
+   * The session id comes from the server and may be the trip's own or the working day it runs
+   * inside — the driver's screen does not need to know which, and must not decide it.
+   */
+  const collectorStatus = useTrackingCollector(
+    state?.trackingSessionId ?? null,
+    state?.samplingPolicy ?? null,
+    { holdScreenAwake: true },
+  );
 
   const run = useCallback(
     async (action: () => Promise<unknown>) => {
@@ -673,70 +678,6 @@ function Profile({ state }: { state: DriverState }) {
 }
 
 /* ----------------------------------------------------------------- shared */
-
-/**
- * Capability detection runs on the client only.
- *
- * Rendering the notice on the server would mean guessing, and guessing here means telling a
- * driver their route is safe when it is not. Until the answer is known the line is blank.
- */
-function useCapabilities(): BackgroundCapability | null {
-  const [capability, setCapability] = useState<BackgroundCapability | null>(null);
-  useEffect(() => {
-    setCapability(detectCapabilities().background);
-  }, []);
-  return capability;
-}
-
-/**
- * Runs the location collector for as long as there is a trip.
- *
- * Started when a trip id appears and stopped when it goes away, which covers ending a trip,
- * navigating away and the tab being closed. The collector owns the queue and the retry; this
- * hook owns only its lifetime, so there is exactly one place where a running watch can leak.
- */
-function useCollector(
-  tripId: string | null,
-  policy: DriverState['samplingPolicy'] | null,
-): CollectorStatus | null {
-  const [status, setStatus] = useState<CollectorStatus | null>(null);
-  const collectorRef = useRef<LocationCollector | null>(null);
-
-  const minIntervalSeconds = policy?.minIntervalSeconds ?? 15;
-  const minDistanceMeters = policy?.minDistanceMeters ?? 50;
-
-  useEffect(() => {
-    if (!tripId) {
-      setStatus(null);
-      return;
-    }
-
-    const collector = createLocationCollector({
-      tripId,
-      minIntervalSeconds,
-      minDistanceMeters,
-      // The wake lock is what makes recording survive a screen that would otherwise sleep. It
-      // costs battery, which is why the driver was told about it before the trip started.
-      holdScreenAwake: true,
-      upload: (points) =>
-        driverApi
-          .submitLocations(tripId, points, typeof navigator === 'undefined' || navigator.onLine)
-          .then(() => undefined),
-      onStatusChange: setStatus,
-    });
-
-    collectorRef.current = collector;
-    void collector.start();
-
-    return () => {
-      collectorRef.current = null;
-      // Flushes what is queued before releasing the watch and the wake lock.
-      void collector.stop();
-    };
-  }, [tripId, minIntervalSeconds, minDistanceMeters]);
-
-  return status;
-}
 
 /** A clock anchored to the server, so a wrong device clock cannot invent hours. */
 function useServerClock(serverTime: string | null): () => number {

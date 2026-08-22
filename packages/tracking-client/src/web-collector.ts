@@ -90,7 +90,7 @@ export class WebLocationCollector implements LocationCollector {
 
     await this.releaseWakeLock();
     await this.flush();
-    await this.queue.clear(this.options.tripId);
+    await this.queue.clear(this.options.sessionId);
     this.update({ state: 'STOPPED', screenHeldAwake: false });
   }
 
@@ -150,7 +150,7 @@ export class WebLocationCollector implements LocationCollector {
 
     this.seq += 1;
     const queued: QueuedPoint = {
-      tripId: this.options.tripId,
+      sessionId: this.options.sessionId,
       seq: this.seq,
       timestamp: position.timestamp,
       latitude: position.coords.latitude,

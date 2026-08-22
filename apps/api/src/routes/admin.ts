@@ -1208,11 +1208,45 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
        * The trip is folded into the same row, so the map shows one marker for one person and can
        * label it with the vehicle they are in. Two markers for one phone would be the clearest
        * possible symptom of the duplicate pipeline this design avoids.
+       *
+       * `session.trip` only exists on a DRIVER_TRIP session — the trip is the reason that session
+       * was opened. A WORK session never points at a trip, because the trip is an overlay on the
+       * day rather than the thing being tracked. So for the common case — an employee who clocked
+       * in and later took a van — the running trip has to be looked up by subject, not read off
+       * the session. Without this the map shows the person and not the vehicle, on exactly the
+       * screen that exists to answer "who has which van, and where is it".
        */
+      const workerIds = sessions.flatMap((session) => (session.worker ? [session.worker.id] : []));
+      const runningTrips = workerIds.length
+        ? await services.prisma.driverTrip.findMany({
+            where: {
+              organizationId: actor.organizationId,
+              endedAt: null,
+              startedAt: { not: null },
+              driver: { workerId: { in: workerIds } },
+            },
+            select: {
+              id: true,
+              label: true,
+              startedAt: true,
+              distanceMeters: true,
+              driver: { select: { workerId: true } },
+              vehicle: { select: { registrationNumber: true, make: true, model: true } },
+            },
+          })
+        : [];
+      const tripByWorker = new Map(
+        runningTrips.flatMap((trip) =>
+          trip.driver.workerId ? [[trip.driver.workerId, trip]] : [],
+        ),
+      );
+
       return {
         serverTime: now.toISOString(),
         subjects: sessions.map((session) => {
-          const vehicle = session.trip?.vehicle ?? session.vehicle ?? null;
+          const trip =
+            session.trip ?? (session.worker ? (tripByWorker.get(session.worker.id) ?? null) : null);
+          const vehicle = trip?.vehicle ?? session.vehicle ?? null;
           const secondsSinceFix = session.lastPointAt
             ? Math.max(0, Math.round((now.getTime() - session.lastPointAt.getTime()) / 1000))
             : null;
@@ -1252,12 +1286,12 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
                   model: vehicle.model,
                 }
               : null,
-            trip: session.trip
+            trip: trip
               ? {
-                  id: session.trip.id,
-                  label: session.trip.label,
-                  startedAt: session.trip.startedAt?.toISOString() ?? null,
-                  distanceMeters: session.trip.distanceMeters,
+                  id: trip.id,
+                  label: trip.label,
+                  startedAt: trip.startedAt?.toISOString() ?? null,
+                  distanceMeters: trip.distanceMeters,
                 }
               : null,
             /**

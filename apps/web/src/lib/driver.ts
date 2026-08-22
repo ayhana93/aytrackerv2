@@ -56,6 +56,13 @@ export interface DriverState {
     readonly currency: string;
     readonly pricePerLiter: string | null;
   } | null;
+  /**
+   * The session the device should report into, when one is open.
+   *
+   * May be the trip's own or the working day it runs inside — decided by the server when the
+   * trip started. The screen runs its collector for exactly as long as this exists.
+   */
+  readonly trackingSessionId: string | null;
   readonly samplingPolicy: {
     readonly minIntervalSeconds: number;
     readonly minDistanceMeters: number;

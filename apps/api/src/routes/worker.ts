@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { PERMISSIONS, assertPermission } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
+import { DEFAULT_SAMPLING_POLICY } from '@aytracker/tracking';
 import { reconcileClientTimestamp } from '@aytracker/module-shifts';
 import { hashRequestBody } from '@aytracker/module-shifts';
 import {
@@ -151,7 +152,7 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
       });
       if (!worker) throw new ForbiddenError('worker.not_found', 'Worker profile unavailable.');
 
-      const [shift, policy] = await Promise.all([
+      const [shift, policy, tracking, settings] = await Promise.all([
         services.prisma.shift.findFirst({
           where: {
             organizationId: actor.organizationId,
@@ -186,6 +187,25 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
         services.prisma.organizationSettings.findUnique({
           where: { organizationId: actor.organizationId },
           select: { allowWorkerSelfShiftStart: true },
+        }),
+        services.prisma.trackingSession.findFirst({
+          where: {
+            organizationId: actor.organizationId,
+            workerId: actor.workerId!,
+            context: 'WORK',
+            endedAt: null,
+          },
+          select: {
+            id: true,
+            startedAt: true,
+            distanceMeters: true,
+            trackingState: true,
+            lastPointAt: true,
+          },
+        }),
+        services.prisma.organizationSettings.findUnique({
+          where: { organizationId: actor.organizationId },
+          select: { gpsMinIntervalSeconds: true, gpsMinDistanceMeters: true },
         }),
       ]);
 
@@ -293,6 +313,29 @@ export function workerRoutes(services: AppServices): FastifyPluginAsync {
             },
           ];
         }),
+        /**
+         * The working day's stream, when one is open.
+         *
+         * The portal runs its collector for exactly as long as this is non-null. There is no
+         * client-side switch: the session opens with the shift and closes with it, and the
+         * server refuses points either side of that.
+         */
+        tracking: tracking
+          ? {
+              sessionId: tracking.id,
+              startedAt: tracking.startedAt.toISOString(),
+              distanceMeters: tracking.distanceMeters,
+              trackingState: tracking.trackingState,
+              lastPointAt: tracking.lastPointAt?.toISOString() ?? null,
+              samplingPolicy: {
+                ...DEFAULT_SAMPLING_POLICY,
+                minIntervalSeconds:
+                  settings?.gpsMinIntervalSeconds ?? DEFAULT_SAMPLING_POLICY.minIntervalSeconds,
+                minDistanceMeters:
+                  settings?.gpsMinDistanceMeters ?? DEFAULT_SAMPLING_POLICY.minDistanceMeters,
+              },
+            }
+          : null,
         policy: {
           /** False when this organization requires a supervisor to start shifts. */
           allowWorkerSelfShiftStart: policy?.allowWorkerSelfShiftStart ?? true,

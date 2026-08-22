@@ -21,14 +21,22 @@
 import type { RawPoint } from './types';
 
 const DB_NAME = 'aytracker-tracking';
-const DB_VERSION = 1;
+/**
+ * Version 2: the partition key became `sessionId`.
+ *
+ * It was `tripId`, back when a point could only belong to a trip. A phone that has run the old
+ * build still has the v1 store with a `tripId` index on disk — and without a version bump
+ * `onupgradeneeded` never fires, so `clear()` would throw `NotFoundError` looking for an index
+ * that is not there. On a driver's phone that means a queue nobody can drain.
+ */
+const DB_VERSION = 2;
 const STORE = 'points';
 
 /** Roughly eight hours at the default sampling floor, with headroom. */
 export const MAX_QUEUED_POINTS = 5000;
 
 export interface QueuedPoint extends RawPoint {
-  readonly tripId: string;
+  readonly sessionId: string;
   /** Monotonic within a session; the queue's ordering key. */
   readonly seq: number;
 }
@@ -39,7 +47,7 @@ export interface PointQueue {
   peek(limit: number): Promise<readonly QueuedPoint[]>;
   remove(seqs: readonly number[]): Promise<void>;
   size(): Promise<number>;
-  clear(tripId: string): Promise<void>;
+  clear(sessionId: string): Promise<void>;
 }
 
 export function isIndexedDbAvailable(): boolean {
@@ -55,9 +63,23 @@ export class IndexedDbPointQueue implements PointQueue {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => {
           const db = request.result;
-          if (!db.objectStoreNames.contains(STORE)) {
-            const store = db.createObjectStore(STORE, { keyPath: 'seq' });
-            store.createIndex('tripId', 'tripId', { unique: false });
+          const store = db.objectStoreNames.contains(STORE)
+            ? request.transaction!.objectStore(STORE)
+            : db.createObjectStore(STORE, { keyPath: 'seq' });
+
+          /*
+           * Points queued under the old key are dropped, not migrated.
+           *
+           * They belong to trips that ended before this build existed, and re-keying them would
+           * mean guessing which session they should have been under. An empty queue on the
+           * upgrade is honest; a queue full of points nobody can attribute is not.
+           */
+          if (store.indexNames.contains('tripId')) {
+            store.deleteIndex('tripId');
+            store.clear();
+          }
+          if (!store.indexNames.contains('sessionId')) {
+            store.createIndex('sessionId', 'sessionId', { unique: false });
           }
         };
         request.onsuccess = () => resolve(request.result);
@@ -132,12 +154,12 @@ export class IndexedDbPointQueue implements PointQueue {
     });
   }
 
-  async clear(tripId: string): Promise<void> {
+  async clear(sessionId: string): Promise<void> {
     const db = await this.open();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
-      const index = tx.objectStore(STORE).index('tripId');
-      const request = index.openCursor(IDBKeyRange.only(tripId));
+      const index = tx.objectStore(STORE).index('sessionId');
+      const request = index.openCursor(IDBKeyRange.only(sessionId));
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) return;
@@ -182,8 +204,8 @@ export class MemoryPointQueue implements PointQueue {
     return this.points.length;
   }
 
-  async clear(tripId: string): Promise<void> {
-    this.points = this.points.filter((point) => point.tripId !== tripId);
+  async clear(sessionId: string): Promise<void> {
+    this.points = this.points.filter((point) => point.sessionId !== sessionId);
   }
 }
 

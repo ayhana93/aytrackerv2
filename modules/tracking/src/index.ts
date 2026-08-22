@@ -11,6 +11,7 @@
  */
 
 export {
+  CLOCK_SKEW_TOLERANCE_SECONDS,
   MAX_LOCATION_BATCH_SIZE,
   admitPoints,
   isValidCoordinate,

@@ -1,6 +1,10 @@
 import { type Clock, type EventBus } from '@aytracker/domain';
 import type { DriverId, OrganizationId, VehicleId, WorkerId } from '@aytracker/types';
 import {
+  DEFAULT_SAMPLING_POLICY,
+  // The package's own admission control is the sampling floor, and shares a name with this
+  // module's session admission. Aliased so the two are never confused at a call site.
+  admitPoints as admitAtInterval,
   computeTrackDistance,
   deriveTrackingState,
   eventForTransition,
@@ -291,10 +295,13 @@ export class TrackingCommandService {
     telemetry?: Partial<DeviceTelemetry> | null;
     now: Date;
     backfillThresholdSeconds?: number;
+    /** The organization's sampling floor. The device is told this; here it is enforced. */
+    minIntervalSeconds?: number;
   }): Promise<{
     accepted: number;
     rejected: number;
     clamped: number;
+    dropped: number;
     state: TrackingState;
     distanceMeters: number;
   }> {
@@ -316,11 +323,43 @@ export class TrackingCommandService {
       // `admitPoints` asserts the session is open, so it is non-null past this line.
       const open = session!;
 
-      if (batch.accepted.length > 0) {
+      /**
+       * The sampling floor, enforced rather than requested.
+       *
+       * `/tracking/state` hands every device a minimum interval. A client that ignores it — a
+       * bug, an old build, or someone curious what happens — must not be able to write a point a
+       * second into the busiest table in the system.
+       *
+       * The floor is applied in two buckets. Points newer than the last one stored are live, and
+       * are thinned against it. Points at or before it are an offline replay arriving late, and
+       * are thinned only against each other: measuring a two-hour-old queued fix against the
+       * newest stored point would discard the entire replay, which is real data about a stretch
+       * of the day we would otherwise have no evidence for.
+       */
+      const storedLastAt = await uow.points.lastPointAt(input.organizationId, open.id);
+      const floorSeconds = input.minIntervalSeconds ?? DEFAULT_SAMPLING_POLICY.minIntervalSeconds;
+      const live = batch.accepted.filter(
+        (point) => storedLastAt === null || point.timestamp.getTime() > storedLastAt.getTime(),
+      );
+      const replay = batch.accepted.filter(
+        (point) => storedLastAt !== null && point.timestamp.getTime() <= storedLastAt.getTime(),
+      );
+      const thinnedLive = admitAtInterval(live, {
+        lastAcceptedAt: storedLastAt,
+        minIntervalSeconds: floorSeconds,
+      });
+      const thinnedReplay = admitAtInterval(replay, {
+        lastAcceptedAt: null,
+        minIntervalSeconds: floorSeconds,
+      });
+      const keep = [...thinnedReplay.accepted, ...thinnedLive.accepted];
+      const dropped = thinnedLive.dropped + thinnedReplay.dropped;
+
+      if (keep.length > 0) {
         await uow.points.appendMany({
           organizationId: input.organizationId,
           trackingSessionId: open.id,
-          points: batch.accepted,
+          points: keep,
         });
       }
 
@@ -362,6 +401,30 @@ export class TrackingCommandService {
         });
       }
 
+      /**
+       * The trip's own running numbers, when the batch touched one.
+       *
+       * The driver's screen and the admin trip list read `driver_trips.distanceMeters` — one
+       * indexed row rather than a scan of the day. Without this the trip shows 0 km until it
+       * closes, which is precisely the number a driver would dispute while it is happening.
+       *
+       * Computed over the trip's points, not the session's: a working day that included a
+       * fifteen-kilometre commute before the trip must not have that distance land on the trip.
+       */
+      if (trip) {
+        const tripPoints = await uow.points.listForTrip(input.organizationId, trip.id);
+        const tripLast = tripPoints.at(-1);
+        if (tripLast) {
+          await uow.trips.updateLiveMetrics({
+            organizationId: input.organizationId,
+            tripId: trip.id,
+            distanceMeters: computeTrackDistance(tripPoints).distanceMeters,
+            lastPointAt: tripLast.timestamp,
+            trackingState: state,
+          });
+        }
+      }
+
       await uow.sessions.updateLiveState({
         organizationId: input.organizationId,
         sessionId: open.id,
@@ -376,9 +439,10 @@ export class TrackingCommandService {
       });
 
       return {
-        accepted: batch.accepted.length,
+        accepted: keep.length,
         rejected: batch.rejected,
         clamped: batch.clamped,
+        dropped,
         state,
         distanceMeters: distance.distanceMeters,
       };

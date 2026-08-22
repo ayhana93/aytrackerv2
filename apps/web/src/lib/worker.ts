@@ -61,6 +61,23 @@ export interface WorkerState {
     /** Set while this worker is out in a vehicle. The portal hands them to the driver screen. */
     readonly activeTripId: string | null;
   } | null;
+  /**
+   * The working day's GPS stream, when the organization tracks it.
+   *
+   * Present only while a shift is open — closing the shift closes the session, and the server
+   * then refuses points. The collector runs for exactly as long as this id exists.
+   */
+  readonly tracking: {
+    readonly sessionId: string;
+    readonly startedAt: string;
+    readonly distanceMeters: number;
+    readonly trackingState: string;
+    readonly lastPointAt: string | null;
+    readonly samplingPolicy: {
+      readonly minIntervalSeconds: number;
+      readonly minDistanceMeters: number;
+    };
+  } | null;
   readonly availablePositions: readonly AvailablePosition[];
   readonly policy: { readonly allowWorkerSelfShiftStart: boolean };
 }
@@ -117,7 +134,7 @@ export const workerApi = {
   positionHistory: () => apiRequest<{ sessions: PositionHistoryRow[] }>('/worker/position/history'),
 
   startShift: (input: { initialPositionId?: string | null }) =>
-    apiRequest<{ shiftId: string }>('/worker/shift/start', {
+    apiRequest<{ shiftId: string; trackingSessionId: string }>('/worker/shift/start', {
       method: 'POST',
       body: {
         clientActionId: actionId(),

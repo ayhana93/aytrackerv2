@@ -131,68 +131,82 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
       assertPermission(actor, PERMISSIONS.DRIVER_PORTAL_ACCESS);
       const now = services.clock.now();
 
-      const [driver, assignment, trip, settings, organization] = await Promise.all([
-        services.prisma.driver.findFirst({
-          where: { id: actor.driverId!, organizationId: actor.organizationId },
-          select: {
-            id: true,
-            driverCode: true,
-            worker: { select: { firstName: true, lastName: true } },
-          },
-        }),
-        services.prisma.vehicleAssignment.findFirst({
-          where: {
-            organizationId: actor.organizationId,
-            driverId: actor.driverId!,
-            endedAt: null,
-          },
-          select: {
-            startedAt: true,
-            vehicle: {
-              select: {
-                id: true,
-                registrationNumber: true,
-                make: true,
-                model: true,
-                fuelType: true,
-                odometerCurrent: true,
-                averageConsumption: true,
-                consumptionUnit: true,
+      const [driver, assignment, trip, settings, organization, trackingSession] = await Promise.all(
+        [
+          services.prisma.driver.findFirst({
+            where: { id: actor.driverId!, organizationId: actor.organizationId },
+            select: {
+              id: true,
+              driverCode: true,
+              worker: { select: { firstName: true, lastName: true } },
+            },
+          }),
+          services.prisma.vehicleAssignment.findFirst({
+            where: {
+              organizationId: actor.organizationId,
+              driverId: actor.driverId!,
+              endedAt: null,
+            },
+            select: {
+              startedAt: true,
+              vehicle: {
+                select: {
+                  id: true,
+                  registrationNumber: true,
+                  make: true,
+                  model: true,
+                  fuelType: true,
+                  odometerCurrent: true,
+                  averageConsumption: true,
+                  consumptionUnit: true,
+                },
               },
             },
-          },
-        }),
-        services.prisma.driverTrip.findFirst({
-          where: {
-            organizationId: actor.organizationId,
-            driverId: actor.driverId!,
-            status: { in: ['ACTIVE', 'PAUSED'] },
-          },
-          select: {
-            id: true,
-            label: true,
-            plannedDistanceMeters: true,
-            status: true,
-            startedAt: true,
-            distanceMeters: true,
-            durationSeconds: true,
-            trackingState: true,
-            lastPointAt: true,
-          },
-        }),
-        services.prisma.organizationSettings.findUnique({
-          where: { organizationId: actor.organizationId },
-          select: {
-            gpsMinIntervalSeconds: true,
-            gpsMinDistanceMeters: true,
-            fuelPricePerLiter: true,
-          },
-        }),
-        services.prisma.organization.findUnique({
-          where: { id: actor.organizationId },
-          select: { defaultCurrency: true },
-        }),
-      ]);
+          }),
+          services.prisma.driverTrip.findFirst({
+            where: {
+              organizationId: actor.organizationId,
+              driverId: actor.driverId!,
+              status: { in: ['ACTIVE', 'PAUSED'] },
+            },
+            select: {
+              id: true,
+              label: true,
+              plannedDistanceMeters: true,
+              status: true,
+              startedAt: true,
+              distanceMeters: true,
+              durationSeconds: true,
+              trackingState: true,
+              lastPointAt: true,
+            },
+          }),
+          services.prisma.organizationSettings.findUnique({
+            where: { organizationId: actor.organizationId },
+            select: {
+              gpsMinIntervalSeconds: true,
+              gpsMinDistanceMeters: true,
+              fuelPricePerLiter: true,
+            },
+          }),
+          services.prisma.organization.findUnique({
+            where: { id: actor.organizationId },
+            select: { defaultCurrency: true },
+          }),
+          services.prisma.trackingSession.findFirst({
+            where: {
+              organizationId: actor.organizationId,
+              endedAt: null,
+              OR: [
+                { context: 'DRIVER_TRIP', driverId: actor.driverId! },
+                ...(actor.workerId ? [{ context: 'WORK' as const, workerId: actor.workerId }] : []),
+              ],
+            },
+            select: { id: true },
+            orderBy: { context: 'asc' },
+          }),
+        ],
+      );
 
       const vehicle = assignment?.vehicle ?? null;
       const fuel =
@@ -259,6 +273,14 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
          * rather than a confident zero.
          */
         fuel,
+        /**
+         * Where this device should send its points.
+         *
+         * Resolved here rather than assumed by the client: a worker driving during their shift
+         * reports into the working day's session, and a driver who signed in at the driver door
+         * reports into the trip's own. One id, decided by the server, either way.
+         */
+        trackingSessionId: trackingSession?.id ?? null,
         /**
          * The sampling policy the device should follow. Sent from the server so it can be tuned
          * per organization without shipping a new client — and treated as a floor on ingestion,

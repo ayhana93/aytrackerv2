@@ -974,6 +974,14 @@ describe('a trip records from start to finish', () => {
  * close tracking when the trip ended.
  */
 describe('work tracking, and a driver trip inside it', () => {
+  /**
+   * Starts a shift and backdates its tracking session by half an hour.
+   *
+   * Only the clock is moved. A session that opened this millisecond has no window to report
+   * into: every point a test could send would sit before `startedAt` and be corrected onto it,
+   * which tests the clock-skew rule rather than whatever the test was about. Half an hour is
+   * what a shift looks like by the time a phone has anything to say.
+   */
   async function startShift(worker: LoggedIn) {
     const response = await app.inject({
       method: 'POST',
@@ -982,8 +990,24 @@ describe('work tracking, and a driver trip inside it', () => {
       payload: { clientActionId: randomUUID(), initialPositionId: tenant.positionIds.machine1 },
     });
     expect(response.statusCode).toBe(200);
-    return response.json() as { shiftId: string; trackingSessionId: string };
+    const body = response.json() as { shiftId: string; trackingSessionId: string };
+
+    await prisma.trackingSession.update({
+      where: { id: body.trackingSessionId },
+      data: { startedAt: new Date(Date.now() - 30 * 60 * 1000) },
+    });
+    return body;
   }
+
+  /**
+   * A batch as a real device would send it.
+   *
+   * Points are spaced at the organization's sampling floor (15 s by default) rather than one a
+   * second: the server thins anything faster, so a one-second batch would test the flood guard
+   * instead of the thing each test is about. `offsetSeconds` moves a later batch clear of the
+   * one before it, the way a device that keeps reporting actually does.
+   */
+  const SAMPLE_SECONDS = 20;
 
   async function postPoints(actor: LoggedIn, count = 3, offsetSeconds = 0) {
     const now = Date.now();
@@ -996,7 +1020,9 @@ describe('work tracking, and a driver trip inside it', () => {
         deviceReported: 'ONLINE',
         batteryLevel: 0.62,
         points: Array.from({ length: count }, (_, index) => ({
-          timestamp: new Date(now - (count - index) * 1000 + offsetSeconds * 1000).toISOString(),
+          timestamp: new Date(
+            now - (count - index) * SAMPLE_SECONDS * 1000 + offsetSeconds * 1000,
+          ).toISOString(),
           latitude: 42.6977 + index * 0.001,
           longitude: 23.3219 + index * 0.001,
           accuracyMeters: 8,
@@ -1021,6 +1047,47 @@ describe('work tracking, and a driver trip inside it', () => {
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json().accepted).toBe(3);
     expect(accepted.json().state).toBe('ACTIVE');
+  });
+
+  /**
+   * The sampling floor is enforced, not requested.
+   *
+   * `/tracking/state` hands the device a minimum interval. A client that ignores it — an old
+   * build, a bug, or someone curious — must not be able to write a point a second into the
+   * busiest table in the system. The batch still succeeds: an over-eager client should not be
+   * able to fail an employee's whole upload and lose the fixes that were worth keeping.
+   */
+  it('thins a batch that ignores the sampling floor instead of storing all of it', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const now = Date.now();
+    const flood = await app.inject({
+      method: 'POST',
+      url: '/api/v1/tracking/points',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        deviceReported: 'ONLINE',
+        points: Array.from({ length: 60 }, (_, index) => ({
+          timestamp: new Date(now - (60 - index) * 1000).toISOString(),
+          latitude: 42.6977 + index * 0.0001,
+          longitude: 23.3219 + index * 0.0001,
+          accuracyMeters: 8,
+          speedMps: 12,
+        })),
+      },
+    });
+
+    expect(flood.statusCode).toBe(200);
+    // A minute of one-second fixes, against a 15-second floor: four or five survive.
+    expect(flood.json().accepted).toBeLessThanOrEqual(5);
+    expect(flood.json().dropped).toBeGreaterThanOrEqual(55);
+
+    const stored = await prisma.locationPoint.count({
+      where: { organizationId: tenant.organizationId, trackingSessionId },
+    });
+    expect(stored).toBe(flood.json().accepted);
   });
 
   it('keeps the same session when a trip starts inside the shift', async () => {
@@ -1051,9 +1118,16 @@ describe('work tracking, and a driver trip inside it', () => {
     expect(sessions[0]?.id).toBe(trackingSessionId);
     expect(sessions[0]?.context).toBe('WORK');
 
-    // Points sent now carry the trip as well — same rows, two attributions.
-    const during = await postPoints(worker, 3, 1);
+    /*
+     * Points sent now carry the trip as well — same rows, two attributions.
+     *
+     * One point, dated now: the trip started a moment ago, and the server decides the overlay
+     * from each timestamp rather than from the request, so a backdated fix would correctly come
+     * back untagged and prove nothing about the overlay.
+     */
+    const during = await postPoints(worker, 1, SAMPLE_SECONDS);
     expect(during.statusCode).toBe(200);
+    expect(during.json().accepted).toBe(1);
 
     const tagged = await prisma.locationPoint.count({
       where: { organizationId: tenant.organizationId, tripId },
@@ -1225,5 +1299,45 @@ describe('work tracking, and a driver trip inside it', () => {
     });
     expect(track.statusCode).toBe(200);
     expect(track.json().segments[0].context).toBe('WORK');
+  });
+
+  /**
+   * The one question the live map exists to answer: who has which van, and where is it.
+   *
+   * A worker who takes a vehicle keeps their WORK session — the trip is an overlay on the day,
+   * so the session never points at it. Reading the vehicle off the session alone would leave
+   * every driving employee showing as a person with no vehicle, which is the case this screen
+   * is for.
+   */
+  it('shows the admin which vehicle a working employee is driving', async () => {
+    const worker = await loginWorker();
+    await startShift(worker);
+    await postPoints(worker, 2);
+
+    const begun = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/driving/begin',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        positionId: tenant.positionIds.driving,
+        vehicleId: tenant.vehicleId,
+        label: 'Склад → Клиент',
+      },
+    });
+    expect(begun.statusCode).toBe(200);
+
+    const admin = await loginAdmin();
+    const live = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/live',
+      headers: { cookie: admin.cookies },
+    });
+    const subject = live.json().subjects[0];
+    // Still one WORK session — and now it says what they are driving.
+    expect(subject.context).toBe('WORK');
+    expect(subject.vehicle).not.toBeNull();
+    expect(subject.trip.id).toBe(begun.json().tripId);
+    expect(subject.trip.label).toBe('Склад → Клиент');
   });
 });
