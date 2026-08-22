@@ -15,6 +15,8 @@ import {
 } from '@aytracker/ui';
 import { detectCapabilities, type BackgroundCapability } from '@aytracker/tracking-client';
 import type { TrackingState } from '@aytracker/tracking';
+import { PRODUCT_NAME, useRememberedBrand } from '../../lib/brand';
+import { BrandMark } from '../../components/brand-mark';
 
 /**
  * Driver portal — where the worker lands after picking a vehicle.
@@ -48,26 +50,39 @@ const TRACKING_LABELS: Readonly<Record<TrackingState, string>> = {
  *
  * Never a promise the platform will not keep. On the web the honest answer is that recording
  * needs the screen on; only a native build can say otherwise.
+ *
+ * Takes the application's name rather than hardcoding it: to the driver reading this, the
+ * application is their employer's, and it is that name on the bar above the text.
  */
-const BACKGROUND_NOTICE: Readonly<Record<BackgroundCapability, string>> = {
-  NATIVE: 'Записът продължава и при изгасен екран.',
-  WAKE_LOCK:
-    'Записът работи, докато екранът е включен. AYtracker го задържа буден по време на курса.',
-  FOREGROUND_ONLY:
-    'Дръж AYtracker отворен, за да се записва маршрутът. Прекъсванията се отбелязват.',
-  NONE: 'Това устройство не поддържа проследяване на местоположението.',
-};
+function backgroundNotice(capability: BackgroundCapability, appName: string): string {
+  switch (capability) {
+    case 'NATIVE':
+      return 'Записът продължава и при изгасен екран.';
+    case 'WAKE_LOCK':
+      return `Записът работи, докато екранът е включен. ${appName} го задържа буден по време на курса.`;
+    case 'FOREGROUND_ONLY':
+      return `Дръж ${appName} отворен, за да се записва маршрутът. Прекъсванията се отбелязват.`;
+    case 'NONE':
+      return 'Това устройство не поддържа проследяване на местоположението.';
+  }
+}
 
 export default function DriverPortalPage() {
   const [paused, setPaused] = useState(false);
   const elapsed = useTripTimer();
   const capabilities = useCapabilities();
+  // The employer's name and logo, from the company code this device signed in with.
+  const brand = useRememberedBrand();
+  const appName = brand?.organizationName ?? PRODUCT_NAME;
 
   const state: TrackingState = paused ? 'PAUSED' : 'ACTIVE';
 
   return (
     <PortalShell>
       <AppBar
+        leading={
+          <BrandMark name={appName} logoUrl={brand?.logoUrl ?? null} nameless logoHeight="1.5rem" />
+        }
         title={<span className="ay-h3">Текущ маршрут</span>}
         trailing={<ThemeToggle labels={{ light: 'Светла', dark: 'Тъмна', system: 'Системна' }} />}
       />
@@ -101,7 +116,7 @@ export default function DriverPortalPage() {
             </Badge>
           </div>
           <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-3)' }}>
-            {capabilities ? BACKGROUND_NOTICE[capabilities] : ' '}
+            {capabilities ? backgroundNotice(capabilities, appName) : ' '}
           </p>
         </Card>
 

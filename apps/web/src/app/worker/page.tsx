@@ -14,6 +14,8 @@ import {
   TabBar,
   ThemeToggle,
 } from '@aytracker/ui';
+import { PRODUCT_NAME, useRememberedBrand } from '../../lib/brand';
+import { BrandMark } from '../../components/brand-mark';
 
 /**
  * Worker portal.
@@ -97,6 +99,16 @@ export default function WorkerPortalPage() {
   const [breakOpen, setBreakOpen] = useState(false);
   const elapsed = useShiftTimer();
 
+  /**
+   * Whose portal this is.
+   *
+   * Read from the company code this device signed in with rather than from the session, because
+   * the header renders before any request has come back and a bar that says one name and then
+   * another half a second later is worse than one that is briefly neutral.
+   */
+  const brand = useRememberedBrand();
+  const appName = brand?.organizationName ?? PRODUCT_NAME;
+
   const goHome = useCallback(() => {
     setScreen('home');
     setTarget(null);
@@ -164,7 +176,12 @@ export default function WorkerPortalPage() {
         }
         title={
           screen === 'home' ? (
-            <span className="ay-h3">AYtracker</span>
+            <span
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-2)' }}
+              className="ay-h3"
+            >
+              <BrandMark name={appName} logoUrl={brand?.logoUrl ?? null} logoHeight="1.5rem" />
+            </span>
           ) : screen === 'positions' ? (
             'Смяна на позиция'
           ) : screen === 'vehicles' ? (
@@ -204,6 +221,7 @@ export default function WorkerPortalPage() {
             from={currentPosition}
             to={target}
             vehicle={vehicle}
+            appName={appName}
             onConfirm={confirm}
             onCancel={goHome}
           />
@@ -340,12 +358,15 @@ function ConfirmScreen({
   from,
   to,
   vehicle,
+  appName,
   onConfirm,
   onCancel,
 }: {
   from: string;
   to: Position;
   vehicle: Vehicle | null;
+  /** The organization's name, which is what this application is called to the person reading it. */
+  appName: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -381,7 +402,7 @@ function ConfirmScreen({
           <p className="ay-overline ay-muted">Проследяване</p>
           <p className="ay-small" style={{ marginTop: 'var(--ay-space-2)' }}>
             Записът на маршрута започва веднага. В браузър записът работи, докато екранът е включен
-            — AYtracker ще го задържи буден. Прекъсванията се отбелязват на маршрута.
+            — {appName} ще го задържи буден. Прекъсванията се отбелязват на маршрута.
           </p>
         </Card>
       ) : null}

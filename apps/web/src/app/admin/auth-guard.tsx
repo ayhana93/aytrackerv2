@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { authApi, type MeResponse } from '../../lib/auth';
 
@@ -17,7 +17,20 @@ import { authApi, type MeResponse } from '../../lib/auth';
  * `/auth/me` to get facts this component already had in hand.
  */
 
-const SessionContext = createContext<MeResponse | null>(null);
+interface SessionValue {
+  readonly session: MeResponse;
+  /**
+   * Re-reads `/auth/me`.
+   *
+   * The settings screen needs it: renaming the organization or choosing a logo changes what the
+   * sidebar shows, and the sidebar renders from the session that was fetched when the shell
+   * mounted. Without this the only way to see your own rename is to reload the page, which looks
+   * like the save did not work.
+   */
+  readonly refresh: () => Promise<void>;
+}
+
+const SessionContext = createContext<SessionValue | null>(null);
 
 /**
  * The current session.
@@ -27,16 +40,29 @@ const SessionContext = createContext<MeResponse | null>(null);
  * as whom yet".
  */
 export function useSession(): MeResponse {
-  const session = useContext(SessionContext);
-  if (!session) {
+  return useSessionContext().session;
+}
+
+/** The session plus the way to re-read it. */
+export function useSessionContext(): SessionValue {
+  const value = useContext(SessionContext);
+  if (!value) {
     throw new Error('useSession must be used inside AdminAuthGuard.');
   }
-  return session;
+  return value;
 }
 
 export function AdminAuthGuard({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [session, setSession] = useState<MeResponse | null>(null);
+
+  const refresh = useCallback(async () => {
+    // Deliberately does not sign anybody out on failure: this runs after a settings save, and a
+    // hiccup re-reading the session must not throw the admin back to the login screen holding a
+    // change that did save.
+    const me = await authApi.me().catch(() => null);
+    if (me) setSession(me);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,5 +100,5 @@ export function AdminAuthGuard({ children }: { children: ReactNode }) {
     );
   }
 
-  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
+  return <SessionContext.Provider value={{ session, refresh }}>{children}</SessionContext.Provider>;
 }

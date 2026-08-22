@@ -10,6 +10,7 @@ import authentication from './plugins/authentication.js';
 import authorization from './plugins/authorization.js';
 import { authRoutes } from './routes/auth.js';
 import { marketRoutes } from './routes/market.js';
+import { brandingRoutes } from './routes/branding.js';
 import { workerRoutes } from './routes/worker.js';
 import { driverRoutes } from './routes/driver.js';
 import { adminRoutes } from './routes/admin.js';
@@ -104,6 +105,9 @@ export async function buildApp(config: AppConfig, services: AppServices): Promis
   await app.register(healthRoutes(services), { prefix: '/health' });
   await app.register(authRoutes(services), { prefix: '/api/v1/auth' });
   await app.register(marketRoutes(services), { prefix: '/api/v1/market' });
+  // Unauthenticated on purpose: a login page has to render a customer's name and logo before
+  // anybody has proved who they are. See the note at the top of routes/branding.ts.
+  await app.register(brandingRoutes(services), { prefix: '/api/v1/branding' });
   await app.register(workerRoutes(services), { prefix: '/api/v1/worker' });
   await app.register(driverRoutes(services), { prefix: '/api/v1/driver' });
   await app.register(adminRoutes(services), { prefix: '/api/v1/admin' });

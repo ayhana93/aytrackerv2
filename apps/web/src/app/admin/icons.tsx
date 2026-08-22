@@ -107,6 +107,22 @@ export const IconRoute = (
   </Glyph>
 );
 
+/**
+ * Settings: a sliders panel rather than the usual cog.
+ *
+ * A cog on this grid needs a dozen teeth to read as one, and at 18px they blur into a filled
+ * circle — the same failure the Unicode glyphs had. Three tracks and two handles survive the
+ * size.
+ */
+export const IconSettings = (
+  <Glyph>
+    <path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2" />
+    <circle cx="16" cy="7" r="2" />
+    <circle cx="10" cy="12" r="2" />
+    <circle cx="16" cy="17" r="2" />
+  </Glyph>
+);
+
 /** Sign out. */
 export const IconSignOut = (
   <Glyph>

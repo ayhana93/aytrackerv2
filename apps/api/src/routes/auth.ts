@@ -6,6 +6,7 @@ import {
   registerSchema,
   workerLoginSchema,
 } from '@aytracker/validation';
+import { displayName, logoAssetUrl } from '../lib/branding.js';
 import type { AppServices } from '../services/container.js';
 
 /**
@@ -230,7 +231,11 @@ export function authRoutes(services: AppServices): FastifyPluginAsync {
         services.entitlements.forOrganization(actor.organizationId),
         services.prisma.organization.findUnique({
           where: { id: actor.organizationId },
-          select: { name: true, slug: true },
+          select: {
+            name: true,
+            slug: true,
+            branding: { select: { companyName: true, logoAssetId: true, logoUrl: true } },
+          },
         }),
       ]);
       return {
@@ -243,7 +248,18 @@ export function authRoutes(services: AppServices): FastifyPluginAsync {
          * anyone because the tenant key exists only in a database column.
          */
         organizationSlug: organization?.slug ?? null,
-        organizationName: organization?.name ?? null,
+        /**
+         * The name every shell in the product shows in place of the product's own.
+         *
+         * Resolved here rather than in each client so the sidebar, the worker portal and the
+         * driver portal cannot disagree about what the company is called — and so a client never
+         * has to decide between `branding.companyName` and the registered name.
+         */
+        organizationName: organization ? displayName(organization, organization.branding) : null,
+        /** The chosen logo, or an externally hosted one, or null for the monogram fallback. */
+        organizationLogoUrl: organization?.branding?.logoAssetId
+          ? logoAssetUrl(services.config.env.API_URL, organization.branding.logoAssetId)
+          : (organization?.branding?.logoUrl ?? null),
         userId: actor.userId ?? null,
         workerId: actor.workerId ?? null,
         driverId: actor.driverId ?? null,
