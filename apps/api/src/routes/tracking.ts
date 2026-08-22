@@ -84,7 +84,14 @@ export function trackingRoutes(services: AppServices): FastifyPluginAsync {
           ),
           services.prisma.organizationSettings.findUnique({
             where: { organizationId: actor.organizationId },
-            select: { gpsMinIntervalSeconds: true },
+            select: {
+              gpsMinIntervalSeconds: true,
+              speedLimitKph: true,
+              speedSustainedSeconds: true,
+              speedCooldownSeconds: true,
+              geofenceExitHysteresisMeters: true,
+              geofenceDebounceSeconds: true,
+            },
           }),
         ]);
         if (!sessionId) {
@@ -119,6 +126,30 @@ export function trackingRoutes(services: AppServices): FastifyPluginAsync {
            */
           minIntervalSeconds:
             settings?.gpsMinIntervalSeconds ?? DEFAULT_SAMPLING_POLICY.minIntervalSeconds,
+          /**
+           * Geofence and speed policy, read here and enforced there.
+           *
+           * `speedLimitKph` is null until somebody sets one, and null means no speed alerting
+           * at all — not a default limit. The organization decides what "too fast" is, because
+           * the organization is the one that has to have the conversation about it.
+           */
+          geofenceOptions: {
+            ...(settings?.geofenceExitHysteresisMeters !== undefined
+              ? { exitHysteresisMeters: settings.geofenceExitHysteresisMeters }
+              : {}),
+            ...(settings?.geofenceDebounceSeconds !== undefined
+              ? { debounceSeconds: settings.geofenceDebounceSeconds }
+              : {}),
+          },
+          speedLimitKph: settings?.speedLimitKph ?? null,
+          speedAlertOptions: {
+            ...(settings?.speedSustainedSeconds !== undefined
+              ? { sustainedSeconds: settings.speedSustainedSeconds }
+              : {}),
+            ...(settings?.speedCooldownSeconds !== undefined
+              ? { cooldownSeconds: settings.speedCooldownSeconds }
+              : {}),
+          },
         });
       },
     );

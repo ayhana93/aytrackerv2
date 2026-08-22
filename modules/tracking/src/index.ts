@@ -36,6 +36,8 @@ export {
 } from './domain/session.js';
 
 export type {
+  ComputedVisit,
+  GeofenceAccess,
   LocationPointRepository,
   TrackedPoint,
   TrackingEventRepository,
@@ -48,6 +50,7 @@ export type {
 export { TrackingCommandService } from './application/tracking-commands.js';
 
 export {
+  PrismaGeofenceAccess,
   PrismaLocationPointRepository,
   PrismaTrackingEventRepository,
   PrismaTrackingSessionRepository,

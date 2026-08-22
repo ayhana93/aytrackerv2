@@ -86,6 +86,44 @@ export const updateOperationalSettingsSchema = z.object({
    */
   gpsMinIntervalSeconds: z.number().int().min(5).max(300).optional(),
   gpsMinDistanceMeters: z.number().int().min(10).max(2000).optional(),
+
+  /**
+   * The speed limit alerts are measured against, in km/h.
+   *
+   * Explicitly nullable, and null is the default: no limit means no speed alerting. There is no
+   * fallback number here on purpose — reporting an employee for exceeding a limit their employer
+   * never set is the kind of figure that ends up quoted in a disciplinary meeting.
+   */
+  speedLimitKph: z.number().int().min(1).max(300).nullable().optional(),
+  /** How long a reading must stay over the limit before it is an alert rather than a sample. */
+  speedSustainedSeconds: z.number().int().min(5).max(600).optional(),
+  /** How long after a stretch before another can be reported. Stop-start traffic needs this. */
+  speedCooldownSeconds: z.number().int().min(0).max(7200).optional(),
+
+  /** The geofence anti-flap band, in metres past the radius. */
+  geofenceExitHysteresisMeters: z.number().int().min(0).max(1000).optional(),
+  /** How long a crossing must hold before it counts as an arrival or a departure. */
+  geofenceDebounceSeconds: z.number().int().min(0).max(3600).optional(),
+});
+
+/**
+ * A geofence.
+ *
+ * A circle: a centre and a radius. The radius floor is not arbitrary — below about 20 m a fence
+ * is inside ordinary GPS error and would fire on a phone standing still on a pavement.
+ */
+export const createGeofenceSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  kind: z.enum(['SITE', 'CUSTOMER', 'RESTRICTED', 'OTHER']).default('CUSTOMER'),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  radiusMeters: z.number().int().min(20).max(50_000),
+  siteId: z.string().uuid().nullable().optional(),
+  notes: z.string().trim().max(500).nullable().optional(),
+});
+
+export const updateGeofenceSchema = createGeofenceSchema.partial().extend({
+  isActive: z.boolean().optional(),
 });
 
 export const marketQuerySchema = z.object({

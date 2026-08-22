@@ -6,6 +6,8 @@
  */
 
 export * from './geo.js';
+export * from './geofence.js';
+export * from './speed.js';
 export * from './tracking-state.js';
 export * from './fuel-calculator.js';
 export * from './sampling.js';

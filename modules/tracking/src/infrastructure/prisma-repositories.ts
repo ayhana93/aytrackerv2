@@ -1,7 +1,7 @@
 import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
 import type { DriverId, OrganizationId, VehicleId, WorkerId } from '@aytracker/types';
-import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
+import type { Geofence, TrackingEventType, TrackingState } from '@aytracker/tracking';
 import type { AdmittedLocationPoint, TripWindow } from '../domain/admission.js';
 import type {
   DeviceTelemetry,
@@ -10,6 +10,8 @@ import type {
   TrackingSessionState,
 } from '../domain/session.js';
 import type {
+  ComputedVisit,
+  GeofenceAccess,
   LocationPointRepository,
   TrackedPoint,
   TrackingEventRepository,
@@ -356,6 +358,129 @@ export class PrismaTrackingEventRepository implements TrackingEventRepository {
     });
     return (event?.state as TrackingState | undefined) ?? null;
   }
+
+  async occurrencesOf(
+    organizationId: OrganizationId,
+    sessionId: TrackingSessionId,
+    type: TrackingEventType,
+  ): Promise<readonly Date[]> {
+    const rows = await this.db.trackingEvent.findMany({
+      where: { organizationId, trackingSessionId: sessionId, type },
+      select: { occurredAt: true },
+    });
+    return rows.map((row) => row.occurredAt);
+  }
+}
+
+/**
+ * Geofences, and the visits derived from a session's points.
+ *
+ * `syncVisits` is the interesting half. It makes the stored rows equal the computed ones and
+ * reports the difference, which is what lets the caller log an arrival once rather than on every
+ * batch that re-derives it.
+ */
+export class PrismaGeofenceAccess implements GeofenceAccess {
+  constructor(private readonly db: DatabaseClient) {}
+
+  async listActive(organizationId: OrganizationId): Promise<readonly Geofence[]> {
+    const rows = await this.db.geofence.findMany({
+      where: { organizationId, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        centerLatitude: true,
+        centerLongitude: true,
+        radiusMeters: true,
+      },
+      take: 500,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      center: { latitude: Number(row.centerLatitude), longitude: Number(row.centerLongitude) },
+      radiusMeters: row.radiusMeters,
+    }));
+  }
+
+  async syncVisits(input: {
+    organizationId: OrganizationId;
+    trackingSessionId: TrackingSessionId;
+    visits: readonly ComputedVisit[];
+  }): Promise<{
+    readonly entered: readonly ComputedVisit[];
+    readonly exited: readonly ComputedVisit[];
+  }> {
+    const stored = await this.db.geofenceVisit.findMany({
+      where: {
+        organizationId: input.organizationId,
+        trackingSessionId: input.trackingSessionId,
+      },
+      select: { id: true, geofenceId: true, enteredAt: true, exitedAt: true },
+    });
+
+    const key = (geofenceId: string, enteredAt: Date) => `${geofenceId}@${enteredAt.getTime()}`;
+    const storedByKey = new Map(stored.map((row) => [key(row.geofenceId, row.enteredAt), row]));
+
+    const entered: ComputedVisit[] = [];
+    const exited: ComputedVisit[] = [];
+
+    for (const visit of input.visits) {
+      const existing = storedByKey.get(key(visit.geofenceId, visit.enteredAt));
+      if (!existing) {
+        await this.db.geofenceVisit.create({
+          data: {
+            organizationId: input.organizationId,
+            geofenceId: visit.geofenceId,
+            trackingSessionId: input.trackingSessionId,
+            tripId: visit.tripId,
+            enteredAt: visit.enteredAt,
+            exitedAt: visit.exitedAt,
+            dwellSeconds: visit.dwellSeconds,
+            entryLatitude: visit.entryLatitude.toFixed(6),
+            entryLongitude: visit.entryLongitude.toFixed(6),
+          },
+        });
+        entered.push(visit);
+        // A visit that arrived already closed — a short stop confirmed by one late batch — is
+        // both an arrival and a departure, and both deserve their event.
+        if (visit.exitedAt) exited.push(visit);
+        continue;
+      }
+
+      const newlyClosed = existing.exitedAt === null && visit.exitedAt !== null;
+      await this.db.geofenceVisit.update({
+        where: { id: existing.id },
+        data: {
+          exitedAt: visit.exitedAt,
+          dwellSeconds: visit.dwellSeconds,
+          tripId: visit.tripId,
+        },
+      });
+      if (newlyClosed) exited.push(visit);
+    }
+
+    /*
+     * Rows the points no longer support.
+     *
+     * This is the price of recomputation, and it is the right price: a replay that fills in the
+     * gap between two fixes can show that what looked like a visit was a phone losing signal at
+     * a red light. Leaving the row would keep a visit nobody made on a customer's report.
+     */
+    const computedKeys = new Set(
+      input.visits.map((visit) => key(visit.geofenceId, visit.enteredAt)),
+    );
+    const orphans = stored.filter((row) => !computedKeys.has(key(row.geofenceId, row.enteredAt)));
+    if (orphans.length > 0) {
+      await this.db.geofenceVisit.deleteMany({
+        where: {
+          organizationId: input.organizationId,
+          id: { in: orphans.map((row) => row.id) },
+        },
+      });
+    }
+
+    return { entered, exited };
+  }
 }
 
 /**
@@ -420,6 +545,7 @@ export class PrismaTrackingTransactionRunner implements TrackingTransactionRunne
         points: new PrismaLocationPointRepository(tx),
         events: new PrismaTrackingEventRepository(tx),
         trips: new PrismaTripWindowAccess(tx),
+        geofences: new PrismaGeofenceAccess(tx),
       }),
     );
   }

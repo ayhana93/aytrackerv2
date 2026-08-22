@@ -99,6 +99,9 @@ export const en = {
   'tracking.event.device_offline': 'Device offline',
   'tracking.event.app_not_reporting': 'App no longer reporting',
   'tracking.event.reporting_recovered': 'Location updates resumed',
+  'tracking.event.geofence_enter': 'Entered {name}',
+  'tracking.event.geofence_exit': 'Left {name}',
+  'tracking.event.speed_exceeded': 'Speed {peak} km/h over a {limit} km/h limit',
   'tracking.gap': 'No location data between {from} and {to}',
   'tracking.permission_prompt': 'AYtracker needs location access to record this trip.',
 

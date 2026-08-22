@@ -10,10 +10,12 @@ import {
 } from '@aytracker/tracking';
 import type { OrganizationId } from '@aytracker/types';
 import {
+  createGeofenceSchema,
   createPositionSchema,
   createVehicleSchema,
   createWorkAreaSchema,
   createWorkerSchema,
+  updateGeofenceSchema,
   updateOperationalSettingsSchema,
   updatePositionSchema,
   updateWorkAreaSchema,
@@ -48,6 +50,74 @@ const MAX_RANGE_DAYS = 92;
 const MIN_STOP_SECONDS = 20 * 60;
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The operational settings, in one place.
+ *
+ * Named rather than repeated at each of the three sites that need them (the read, the write, and
+ * the write's response), because the failure mode of repeating them is a field that saves and
+ * then does not come back — which reads to the user as "it didn't save".
+ */
+const SETTINGS_FIELDS = {
+  fuelPricePerLiter: true,
+  allowWorkerSelfShiftStart: true,
+  maxShiftDurationMinutes: true,
+  gpsMinIntervalSeconds: true,
+  gpsMinDistanceMeters: true,
+  speedLimitKph: true,
+  speedSustainedSeconds: true,
+  speedCooldownSeconds: true,
+  geofenceExitHysteresisMeters: true,
+  geofenceDebounceSeconds: true,
+} as const;
+
+type SettingsRow = {
+  fuelPricePerLiter: { toString(): string } | null;
+  allowWorkerSelfShiftStart: boolean;
+  maxShiftDurationMinutes: number;
+  gpsMinIntervalSeconds: number;
+  gpsMinDistanceMeters: number;
+  speedLimitKph: number | null;
+  speedSustainedSeconds: number;
+  speedCooldownSeconds: number;
+  geofenceExitHysteresisMeters: number;
+  geofenceDebounceSeconds: number;
+};
+
+function presentSettings(
+  settings: SettingsRow | null,
+  organization: { defaultCurrency: string; defaultTimezone: string } | null,
+) {
+  return {
+    // A Decimal reaching JSON renders as an object; a price has to travel as a string.
+    fuelPricePerLiter: settings?.fuelPricePerLiter?.toString() ?? null,
+    currency: organization?.defaultCurrency ?? 'EUR',
+    timezone: organization?.defaultTimezone ?? 'Europe/Sofia',
+    allowWorkerSelfShiftStart: settings?.allowWorkerSelfShiftStart ?? true,
+    maxShiftDurationMinutes: settings?.maxShiftDurationMinutes ?? 960,
+    gpsMinIntervalSeconds: settings?.gpsMinIntervalSeconds ?? 15,
+    gpsMinDistanceMeters: settings?.gpsMinDistanceMeters ?? 50,
+    /** Null means no speed alerting. It is not a placeholder for a default limit. */
+    speedLimitKph: settings?.speedLimitKph ?? null,
+    speedSustainedSeconds: settings?.speedSustainedSeconds ?? 30,
+    speedCooldownSeconds: settings?.speedCooldownSeconds ?? 600,
+    geofenceExitHysteresisMeters: settings?.geofenceExitHysteresisMeters ?? 40,
+    geofenceDebounceSeconds: settings?.geofenceDebounceSeconds ?? 90,
+  };
+}
+
+/**
+ * The keys the caller actually sent.
+ *
+ * `undefined` means "not mentioned" and is dropped; `null` means "clear this" and is kept. Zod
+ * has already decided which fields may be null, so the distinction survives all the way to the
+ * update rather than being flattened by a spread.
+ */
+function definedOnly<T extends Record<string, unknown>>(body: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+}
 
 function resolveRange(
   query: { from?: string; to?: string },
@@ -1146,6 +1216,77 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
     /* ------------------------------------------------------------------- live */
 
     /**
+     * The workforce, counted.
+     *
+     * "How many people work here, how many are working right now, how many are on break" — the
+     * question a manager asks before any other, and the one that needs no map to answer.
+     *
+     * Counted in the database rather than by summing a page of rows in the browser. The lists on
+     * these screens are capped; a client adding up what it happened to receive would quietly
+     * report a smaller workforce the moment an organization outgrew the cap, and it is the sort
+     * of wrong number nobody notices because it looks plausible.
+     *
+     * `notReporting` deserves its own line rather than being folded into "working". Someone whose
+     * phone has gone quiet is still at work — the honest statement is that we cannot currently see
+     * where, and hiding that inside a green count is how a tracking product starts lying.
+     */
+    app.get('/workforce', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKERS_READ);
+      const organizationId = actor.organizationId;
+      const now = services.clock.now();
+
+      const [employed, shifts, sessions] = await Promise.all([
+        services.prisma.worker.count({ where: { organizationId, status: 'ACTIVE' } }),
+        services.prisma.shift.groupBy({
+          by: ['status'],
+          where: { organizationId, status: { in: ['ACTIVE', 'ON_BREAK'] } },
+          _count: { _all: true },
+        }),
+        services.prisma.trackingSession.findMany({
+          where: { organizationId, endedAt: null },
+          select: { context: true, trackingState: true, tripId: true, workerId: true },
+          take: 1000,
+        }),
+      ]);
+
+      const byStatus = new Map(shifts.map((row) => [row.status, row._count._all]));
+      const onShift = byStatus.get('ACTIVE') ?? 0;
+      const onBreak = byStatus.get('ON_BREAK') ?? 0;
+
+      const driving = await services.prisma.driverTrip.count({
+        where: { organizationId, endedAt: null, startedAt: { not: null } },
+      });
+
+      /** Reporting means a fix arrived recently enough to be current. The rest are silent. */
+      const reporting = sessions.filter(
+        (session) => session.trackingState === 'ACTIVE' || session.trackingState === 'DEGRADED',
+      ).length;
+
+      return {
+        serverTime: now.toISOString(),
+        counts: {
+          /** Everyone on the books. */
+          employed,
+          /** Clocked in and not on a break. */
+          working: onShift,
+          onBreak,
+          /** Of those at work, how many are out in a vehicle. */
+          driving,
+          /** Sessions open and currently sending. */
+          reporting,
+          /**
+           * Open sessions that have gone quiet. Not an accusation: a tunnel, a flat battery and
+           * a force-quit are the same thing from here.
+           */
+          notReporting: sessions.length - reporting,
+          /** At work with no tracking session at all — a shift started on a device that has none. */
+          untracked: Math.max(0, onShift + onBreak - sessions.length),
+        },
+      };
+    });
+
+    /**
      * Everyone and everything currently being tracked, in one query.
      *
      * The live map's only read. It goes to `tracking_sessions` rather than assembling employees
@@ -1456,13 +1597,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       const [settings, organization] = await Promise.all([
         services.prisma.organizationSettings.findUnique({
           where: { organizationId: actor.organizationId },
-          select: {
-            fuelPricePerLiter: true,
-            allowWorkerSelfShiftStart: true,
-            maxShiftDurationMinutes: true,
-            gpsMinIntervalSeconds: true,
-            gpsMinDistanceMeters: true,
-          },
+          select: SETTINGS_FIELDS,
         }),
         services.prisma.organization.findUnique({
           where: { id: actor.organizationId },
@@ -1470,16 +1605,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         }),
       ]);
 
-      return {
-        // A Decimal reaching JSON renders as an object; a price has to travel as a string.
-        fuelPricePerLiter: settings?.fuelPricePerLiter?.toString() ?? null,
-        currency: organization?.defaultCurrency ?? 'EUR',
-        timezone: organization?.defaultTimezone ?? 'Europe/Sofia',
-        allowWorkerSelfShiftStart: settings?.allowWorkerSelfShiftStart ?? true,
-        maxShiftDurationMinutes: settings?.maxShiftDurationMinutes ?? 960,
-        gpsMinIntervalSeconds: settings?.gpsMinIntervalSeconds ?? 15,
-        gpsMinDistanceMeters: settings?.gpsMinDistanceMeters ?? 50,
-      };
+      return presentSettings(settings, organization);
     });
 
     app.patch('/settings', async (request) => {
@@ -1488,58 +1614,26 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       const body = updateOperationalSettingsSchema.parse(request.body);
 
       /**
-       * Upserted, because a settings row may not exist yet.
+       * Only what the request carried.
        *
-       * Registration creates one, but an organization seeded or imported before it did would
-       * otherwise fail here with a record-not-found on the first save — which reads as "settings
-       * are broken" rather than "there was nothing to update".
+       * A patch that omits a field must not reset it to a default the caller never mentioned —
+       * and `speedLimitKph` makes that more than a nicety: it is explicitly nullable, so
+       * "absent" and "set to null" mean different things. Absent leaves the limit alone; null
+       * turns speed alerting off.
+       */
+      const changes = definedOnly(body);
+
+      /*
+       * Upserted, because a settings row may not exist yet. Registration creates one, but an
+       * organization seeded or imported before it did would otherwise fail here with a
+       * record-not-found on the first save — which reads as "settings are broken" rather than
+       * "there was nothing to update".
        */
       const settings = await services.prisma.organizationSettings.upsert({
         where: { organizationId: actor.organizationId },
-        create: {
-          organizationId: actor.organizationId,
-          ...(body.fuelPricePerLiter !== undefined
-            ? { fuelPricePerLiter: body.fuelPricePerLiter }
-            : {}),
-          ...(body.allowWorkerSelfShiftStart !== undefined
-            ? { allowWorkerSelfShiftStart: body.allowWorkerSelfShiftStart }
-            : {}),
-          ...(body.maxShiftDurationMinutes !== undefined
-            ? { maxShiftDurationMinutes: body.maxShiftDurationMinutes }
-            : {}),
-          ...(body.gpsMinIntervalSeconds !== undefined
-            ? { gpsMinIntervalSeconds: body.gpsMinIntervalSeconds }
-            : {}),
-          ...(body.gpsMinDistanceMeters !== undefined
-            ? { gpsMinDistanceMeters: body.gpsMinDistanceMeters }
-            : {}),
-        },
-        // Only what the request carried. A patch that omits a field must not reset it to a
-        // default the caller never mentioned.
-        update: {
-          ...(body.fuelPricePerLiter !== undefined
-            ? { fuelPricePerLiter: body.fuelPricePerLiter }
-            : {}),
-          ...(body.allowWorkerSelfShiftStart !== undefined
-            ? { allowWorkerSelfShiftStart: body.allowWorkerSelfShiftStart }
-            : {}),
-          ...(body.maxShiftDurationMinutes !== undefined
-            ? { maxShiftDurationMinutes: body.maxShiftDurationMinutes }
-            : {}),
-          ...(body.gpsMinIntervalSeconds !== undefined
-            ? { gpsMinIntervalSeconds: body.gpsMinIntervalSeconds }
-            : {}),
-          ...(body.gpsMinDistanceMeters !== undefined
-            ? { gpsMinDistanceMeters: body.gpsMinDistanceMeters }
-            : {}),
-        },
-        select: {
-          fuelPricePerLiter: true,
-          allowWorkerSelfShiftStart: true,
-          maxShiftDurationMinutes: true,
-          gpsMinIntervalSeconds: true,
-          gpsMinDistanceMeters: true,
-        },
+        create: { organizationId: actor.organizationId, ...changes },
+        update: changes,
+        select: SETTINGS_FIELDS,
       });
 
       const organization = await services.prisma.organization.findUnique({
@@ -1547,14 +1641,171 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         select: { defaultCurrency: true, defaultTimezone: true },
       });
 
+      return presentSettings(settings, organization);
+    });
+
+    /**
+     * Geofences: the places this organization cares about arriving at.
+     *
+     * Managed here rather than derived from sites, because most of them are customers rather
+     * than premises — and a dispatcher adding "the new warehouse on the ring road" should not
+     * have to create a site, a work area and a position to do it.
+     */
+    app.get('/geofences', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_READ);
+
+      const fences = await services.prisma.geofence.findMany({
+        where: { organizationId: actor.organizationId },
+        select: {
+          id: true,
+          name: true,
+          kind: true,
+          centerLatitude: true,
+          centerLongitude: true,
+          radiusMeters: true,
+          isActive: true,
+          notes: true,
+          site: { select: { id: true, name: true } },
+          _count: { select: { visits: true } },
+        },
+        orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+        take: 500,
+      });
+
       return {
-        fuelPricePerLiter: settings.fuelPricePerLiter?.toString() ?? null,
-        currency: organization?.defaultCurrency ?? 'EUR',
-        timezone: organization?.defaultTimezone ?? 'Europe/Sofia',
-        allowWorkerSelfShiftStart: settings.allowWorkerSelfShiftStart,
-        maxShiftDurationMinutes: settings.maxShiftDurationMinutes,
-        gpsMinIntervalSeconds: settings.gpsMinIntervalSeconds,
-        gpsMinDistanceMeters: settings.gpsMinDistanceMeters,
+        geofences: fences.map((fence) => ({
+          id: fence.id,
+          name: fence.name,
+          kind: fence.kind,
+          latitude: Number(fence.centerLatitude),
+          longitude: Number(fence.centerLongitude),
+          radiusMeters: fence.radiusMeters,
+          isActive: fence.isActive,
+          notes: fence.notes,
+          site: fence.site,
+          visitCount: fence._count.visits,
+        })),
+      };
+    });
+
+    app.post('/geofences', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_UPDATE);
+      const body = createGeofenceSchema.parse(request.body);
+
+      if (body.siteId) {
+        // Checked here for a decent error; the composite tenant foreign key is what actually
+        // makes borrowing another organization's site impossible.
+        const site = await services.prisma.site.findFirst({
+          where: { id: body.siteId, organizationId: actor.organizationId },
+          select: { id: true },
+        });
+        if (!site) throw new NotFoundError('site.not_found', 'Site not found.');
+      }
+
+      const fence = await services.prisma.geofence.create({
+        data: {
+          organizationId: actor.organizationId,
+          name: body.name,
+          kind: body.kind,
+          centerLatitude: body.latitude.toFixed(6),
+          centerLongitude: body.longitude.toFixed(6),
+          radiusMeters: body.radiusMeters,
+          siteId: body.siteId ?? null,
+          notes: body.notes ?? null,
+        },
+        select: { id: true, name: true, kind: true, radiusMeters: true },
+      });
+
+      reply.code(201);
+      return { geofence: fence };
+    });
+
+    app.patch('/geofences/:geofenceId', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_UPDATE);
+      const { geofenceId } = request.params as { geofenceId: string };
+      const body = updateGeofenceSchema.parse(request.body);
+
+      const existing = await services.prisma.geofence.findFirst({
+        where: { id: geofenceId, organizationId: actor.organizationId },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundError('geofence.not_found', 'Geofence not found.');
+
+      const fence = await services.prisma.geofence.update({
+        where: { id: geofenceId },
+        data: {
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.kind !== undefined ? { kind: body.kind } : {}),
+          ...(body.latitude !== undefined ? { centerLatitude: body.latitude.toFixed(6) } : {}),
+          ...(body.longitude !== undefined ? { centerLongitude: body.longitude.toFixed(6) } : {}),
+          ...(body.radiusMeters !== undefined ? { radiusMeters: body.radiusMeters } : {}),
+          ...(body.siteId !== undefined ? { siteId: body.siteId } : {}),
+          ...(body.notes !== undefined ? { notes: body.notes } : {}),
+          ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+        },
+        select: { id: true, name: true, kind: true, radiusMeters: true, isActive: true },
+      });
+
+      return { geofence: fence };
+    });
+
+    /**
+     * Who is where, right now, and who was where today.
+     *
+     * An open visit — no exit — is the live answer. Deliberately no "estimated" exits: a device
+     * that went quiet inside a fence is reported as still inside, because that is the last thing
+     * the record actually supports.
+     */
+    app.get('/geofences/:geofenceId/visits', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
+      const { geofenceId } = request.params as { geofenceId: string };
+      const now = services.clock.now();
+      const { from, to } = resolveRange(request.query as { from?: string; to?: string }, now);
+
+      const visits = await services.prisma.geofenceVisit.findMany({
+        where: {
+          organizationId: actor.organizationId,
+          geofenceId,
+          enteredAt: { gte: from, lte: to },
+        },
+        select: {
+          id: true,
+          enteredAt: true,
+          exitedAt: true,
+          dwellSeconds: true,
+          tripId: true,
+          trackingSession: {
+            select: {
+              context: true,
+              worker: { select: { firstName: true, lastName: true, employeeNumber: true } },
+              driver: { select: { driverCode: true } },
+            },
+          },
+        },
+        orderBy: { enteredAt: 'desc' },
+        take: 500,
+      });
+
+      return {
+        range: { from: from.toISOString(), to: to.toISOString() },
+        visits: visits.map((visit) => ({
+          id: visit.id,
+          who: visit.trackingSession.worker
+            ? `${visit.trackingSession.worker.firstName} ${visit.trackingSession.worker.lastName}`
+            : (visit.trackingSession.driver?.driverCode ?? '—'),
+          employeeNumber: visit.trackingSession.worker?.employeeNumber ?? null,
+          context: visit.trackingSession.context,
+          enteredAt: visit.enteredAt.toISOString(),
+          exitedAt: visit.exitedAt?.toISOString() ?? null,
+          dwellSeconds: visit.dwellSeconds,
+          tripId: visit.tripId,
+          /** Still there as far as the record goes — not "unknown", and not a guessed exit. */
+          isOpen: visit.exitedAt === null,
+        })),
       };
     });
   };

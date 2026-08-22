@@ -257,6 +257,12 @@ export interface SettingsResponse {
   readonly maxShiftDurationMinutes: number;
   readonly gpsMinIntervalSeconds: number;
   readonly gpsMinDistanceMeters: number;
+  /** Null means speed alerting is off. It is not a placeholder for a default limit. */
+  readonly speedLimitKph: number | null;
+  readonly speedSustainedSeconds: number;
+  readonly speedCooldownSeconds: number;
+  readonly geofenceExitHysteresisMeters: number;
+  readonly geofenceDebounceSeconds: number;
 }
 
 export interface UpdateSettingsInput {
@@ -265,6 +271,57 @@ export interface UpdateSettingsInput {
   readonly maxShiftDurationMinutes?: number;
   readonly gpsMinIntervalSeconds?: number;
   readonly gpsMinDistanceMeters?: number;
+  readonly speedLimitKph?: number | null;
+  readonly speedSustainedSeconds?: number;
+  readonly speedCooldownSeconds?: number;
+  readonly geofenceExitHysteresisMeters?: number;
+  readonly geofenceDebounceSeconds?: number;
+}
+
+/**
+ * The workforce, counted by the server.
+ *
+ * Every one of these is a database count rather than the length of a list this client happens to
+ * hold. The lists are capped; a browser summing what it received would under-report the moment an
+ * organization outgrew the cap, and it would look entirely plausible while doing it.
+ */
+export interface WorkforceResponse {
+  readonly serverTime: string;
+  readonly counts: {
+    readonly employed: number;
+    readonly working: number;
+    readonly onBreak: number;
+    readonly driving: number;
+    readonly reporting: number;
+    readonly notReporting: number;
+    readonly untracked: number;
+  };
+}
+
+export interface GeofenceRow {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: 'SITE' | 'CUSTOMER' | 'RESTRICTED' | 'OTHER';
+  readonly latitude: number;
+  readonly longitude: number;
+  readonly radiusMeters: number;
+  readonly isActive: boolean;
+  readonly notes: string | null;
+  readonly site: { readonly id: string; readonly name: string } | null;
+  readonly visitCount: number;
+}
+
+export interface GeofenceVisitRow {
+  readonly id: string;
+  readonly who: string;
+  readonly employeeNumber: string | null;
+  readonly context: 'WORK' | 'DRIVER_TRIP';
+  readonly enteredAt: string;
+  readonly exitedAt: string | null;
+  readonly dwellSeconds: number;
+  readonly tripId: string | null;
+  /** Still inside as far as the record goes — never a guessed exit. */
+  readonly isOpen: boolean;
 }
 
 /**
@@ -375,12 +432,42 @@ export const adminApi = {
   track: (tripId: string) => apiRequest<TrackResponse>(`/admin/trips/${tripId}/track`),
   branding: () => apiRequest<BrandingResponse>('/admin/branding'),
 
+  workforce: () => apiRequest<WorkforceResponse>('/admin/workforce'),
   live: () => apiRequest<LiveResponse>('/admin/live'),
   liveTrack: (sessionId: string) => apiRequest<LiveTrackResponse>(`/admin/live/${sessionId}/track`),
 
   settings: () => apiRequest<SettingsResponse>('/admin/settings'),
   updateSettings: (body: UpdateSettingsInput) =>
     apiRequest<SettingsResponse>('/admin/settings', { method: 'PATCH', body }),
+
+  geofences: () => apiRequest<{ geofences: GeofenceRow[] }>('/admin/geofences'),
+  createGeofence: (body: {
+    name: string;
+    kind?: GeofenceRow['kind'];
+    latitude: number;
+    longitude: number;
+    radiusMeters: number;
+    siteId?: string | null;
+    notes?: string | null;
+  }) => apiRequest<{ geofence: { id: string } }>('/admin/geofences', { method: 'POST', body }),
+  updateGeofence: (
+    geofenceId: string,
+    body: Partial<{
+      name: string;
+      kind: GeofenceRow['kind'];
+      latitude: number;
+      longitude: number;
+      radiusMeters: number;
+      isActive: boolean;
+      notes: string | null;
+    }>,
+  ) =>
+    apiRequest<{ geofence: { id: string } }>(`/admin/geofences/${geofenceId}`, {
+      method: 'PATCH',
+      body,
+    }),
+  geofenceVisits: (geofenceId: string, query?: { from?: string; to?: string }) =>
+    apiRequest<{ visits: GeofenceVisitRow[] }>(`/admin/geofences/${geofenceId}/visits`, { query }),
 
   workers: () => apiRequest<{ workers: WorkerRow[] }>('/admin/workers'),
   createWorker: (body: CreateWorkerInput) =>

@@ -1,5 +1,10 @@
 import type { DriverId, OrganizationId, VehicleId, WorkerId } from '@aytracker/types';
-import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
+import type {
+  Geofence,
+  GeofenceVisit,
+  TrackingEventType,
+  TrackingState,
+} from '@aytracker/tracking';
 import type { AdmittedLocationPoint, TripWindow } from './admission.js';
 import type {
   DeviceTelemetry,
@@ -122,6 +127,53 @@ export interface TrackingEventRepository {
     organizationId: OrganizationId,
     sessionId: TrackingSessionId,
   ): Promise<TrackingState | null>;
+
+  /**
+   * When events of a given type have already been recorded for this session.
+   *
+   * Derived events — a fence crossing, a speeding stretch — are recomputed from the whole point
+   * stream on every batch, so the same crossing is re-derived every time. This is how the second
+   * derivation knows it is looking at something already logged rather than something new.
+   */
+  occurrencesOf(
+    organizationId: OrganizationId,
+    sessionId: TrackingSessionId,
+    type: TrackingEventType,
+  ): Promise<readonly Date[]>;
+}
+
+/**
+ * Geofences, and the visits derived from a session's points.
+ *
+ * Visits are **recomputed**, not accumulated. A late offline replay that fills in the middle of
+ * an afternoon changes what the record supports, and the stored visits have to change with it —
+ * appending a second version would leave two contradictory answers to "how long were they at the
+ * customer" and no way to tell which one to bill from.
+ */
+export interface GeofenceAccess {
+  /** Every active fence in the organization. Few enough to load per batch. */
+  listActive(organizationId: OrganizationId): Promise<readonly Geofence[]>;
+
+  /**
+   * Makes the stored visits for this session equal the computed ones.
+   *
+   * Returns what actually changed, so the caller can log an event for a crossing that is new
+   * rather than for every crossing it just recomputed.
+   */
+  syncVisits(input: {
+    organizationId: OrganizationId;
+    trackingSessionId: TrackingSessionId;
+    visits: readonly ComputedVisit[];
+  }): Promise<{
+    readonly entered: readonly ComputedVisit[];
+    readonly exited: readonly ComputedVisit[];
+  }>;
+}
+
+/** A visit as the domain computed it, with the trip overlay resolved by the caller. */
+export interface ComputedVisit extends GeofenceVisit {
+  readonly geofenceName: string;
+  readonly tripId: string | null;
 }
 
 /**
@@ -157,6 +209,7 @@ export interface TrackingUnitOfWork {
   readonly points: LocationPointRepository;
   readonly events: TrackingEventRepository;
   readonly trips: TripWindowAccess;
+  readonly geofences: GeofenceAccess;
 }
 
 export interface TrackingTransactionRunner {

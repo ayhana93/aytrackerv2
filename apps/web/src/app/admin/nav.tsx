@@ -9,6 +9,7 @@ import {
   IconDashboard,
   IconFleet,
   IconHistory,
+  IconGeofence,
   IconLive,
   IconPeople,
   IconRoute,
@@ -54,6 +55,9 @@ const PEOPLE: readonly Entry[] = [
 const FLEET: readonly Entry[] = [
   { href: '/admin/fleet', label: 'Автопарк', icon: IconFleet },
   { href: '/admin/trips', label: 'Маршрути', icon: IconRoute },
+  // "Геозони" rather than "Зони": /admin/areas already owns that word for work areas, and two
+  // navigation entries a synonym apart is how somebody clicks the wrong one every time.
+  { href: '/admin/geofences', label: 'Геозони', icon: IconGeofence },
 ];
 
 const CONFIGURATION: readonly Entry[] = [

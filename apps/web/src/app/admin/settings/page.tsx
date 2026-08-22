@@ -68,6 +68,18 @@ function SettingsForm({ initial }: { initial: SettingsResponse }) {
   const [maxShift, setMaxShift] = useState(String(initial.maxShiftDurationMinutes));
   const [gpsInterval, setGpsInterval] = useState(String(initial.gpsMinIntervalSeconds));
   const [gpsDistance, setGpsDistance] = useState(String(initial.gpsMinDistanceMeters));
+  /**
+   * The speed limit is a string because an empty field is a meaningful value here.
+   *
+   * Empty means "no limit set", and no limit means no speed alerts at all. It is deliberately not
+   * a number input defaulting to something plausible: a limit nobody chose is a limit nobody can
+   * be held to, and this figure ends up in conversations about people's driving.
+   */
+  const [speedLimit, setSpeedLimit] = useState(
+    initial.speedLimitKph === null ? '' : String(initial.speedLimitKph),
+  );
+  const [speedSustained, setSpeedSustained] = useState(String(initial.speedSustainedSeconds));
+  const [speedCooldown, setSpeedCooldown] = useState(String(initial.speedCooldownSeconds));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -88,7 +100,20 @@ function SettingsForm({ initial }: { initial: SettingsResponse }) {
   const intervalValid = Number.isInteger(interval) && interval >= 5 && interval <= 300;
   const distance = Number(gpsDistance);
   const distanceValid = Number.isInteger(distance) && distance >= 10 && distance <= 2000;
-  const valid = priceValid && shiftValid && intervalValid && distanceValid;
+  const limit = speedLimit.trim();
+  const limitValid =
+    limit === '' || (Number.isInteger(Number(limit)) && Number(limit) >= 1 && Number(limit) <= 300);
+  const sustained = Number(speedSustained);
+  const cooldown = Number(speedCooldown);
+  const windowsValid =
+    Number.isInteger(sustained) &&
+    sustained >= 5 &&
+    sustained <= 600 &&
+    Number.isInteger(cooldown) &&
+    cooldown >= 0 &&
+    cooldown <= 7200;
+  const valid =
+    priceValid && shiftValid && intervalValid && distanceValid && limitValid && windowsValid;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -106,10 +131,16 @@ function SettingsForm({ initial }: { initial: SettingsResponse }) {
         maxShiftDurationMinutes: minutes,
         gpsMinIntervalSeconds: interval,
         gpsMinDistanceMeters: distance,
+        // Empty means off, and off has to be sent as null — omitting it would leave whatever
+        // limit was there before, which is the opposite of what clearing the field means.
+        speedLimitKph: limit === '' ? null : Number(limit),
+        speedSustainedSeconds: sustained,
+        speedCooldownSeconds: cooldown,
       })
       .then((next) => {
         setSettings(next);
         setFuelPrice(next.fuelPricePerLiter ?? '');
+        setSpeedLimit(next.speedLimitKph === null ? '' : String(next.speedLimitKph));
         setSaved(true);
       })
       .catch((caught: unknown) => {
@@ -253,6 +284,69 @@ function SettingsForm({ initial }: { initial: SettingsResponse }) {
             Курсът се записва непрекъснато от началото до края. Шофьорът няма бутон за пауза —
             спиранията се виждат сами на маршрута.
           </p>
+        </div>
+      </Card>
+
+      <Card padded={false}>
+        <CardHeader>
+          <div>
+            <h2 className="ay-h3">Скорост</h2>
+            <p className="ay-caption ay-muted">
+              Без зададено ограничение системата не следи скоростта изобщо.
+            </p>
+          </div>
+        </CardHeader>
+        <div style={{ padding: 'var(--ay-space-5)', display: 'grid', gap: 'var(--ay-space-4)' }}>
+          <Field
+            label="Ограничение (км/ч)"
+            hint="Празно поле означава, че няма сигнали за скорост. Не се подразбира стойност."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={1}
+              max={300}
+              placeholder="няма"
+              value={speedLimit}
+              onChange={(event) => setSpeedLimit(event.target.value)}
+            />
+          </Field>
+
+          <Field
+            label="Продължителност преди сигнал (секунди)"
+            hint="Едно засичане е измерване. Половин минута над ограничението е шофиране."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={5}
+              max={600}
+              value={speedSustained}
+              onChange={(event) => setSpeedSustained(event.target.value)}
+              disabled={limit === ''}
+            />
+          </Field>
+
+          <Field
+            label="Пауза между сигнали (секунди)"
+            hint="Без нея едно пътуване по магистрала дава двайсет сигнала и никой не ги чете."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={0}
+              max={7200}
+              value={speedCooldown}
+              onChange={(event) => setSpeedCooldown(event.target.value)}
+              disabled={limit === ''}
+            />
+          </Field>
+
+          {!limitValid || !windowsValid ? (
+            <p className="ay-small" style={{ color: 'var(--ay-danger)' }}>
+              Ограничението е между 1 и 300 км/ч, продължителността между 5 и 600 секунди.
+            </p>
+          ) : null}
         </div>
       </Card>
 

@@ -112,6 +112,16 @@ const CHECK_CONSTRAINTS = [
   'billing_customers_country_shape',
   'sessions_actor_matches_type',
   'sessions_tenant_bound_for_non_users',
+  // A fence has to be a place: on Earth, and neither smaller than GPS error nor the size of a
+  // county. Both ends of that range are mistakes rather than preferences.
+  'geofences_center_is_on_earth',
+  'geofences_radius_is_a_place',
+  'geofence_visits_end_after_start',
+  'geofence_visits_dwell_is_not_negative',
+  // A speed limit of zero would mean "alert on everything". Off is expressed by NULL.
+  'organization_settings_speed_limit_is_a_speed',
+  'organization_settings_speed_windows_are_positive',
+  'organization_settings_geofence_tuning_is_sane',
 ] as const;
 
 describe('partial unique indexes', () => {

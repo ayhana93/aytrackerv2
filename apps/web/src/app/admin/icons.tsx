@@ -115,6 +115,20 @@ export const IconLive = (
   </Glyph>
 );
 
+/**
+ * Geofences: a place, circled.
+ *
+ * Deliberately not another pin — `IconLive` is already a pin, and this entry answers a different
+ * question ("which places do we watch" rather than "where is everyone"). The circle around the
+ * marker is the fence itself, which is what the screen is about.
+ */
+export const IconGeofence = (
+  <Glyph>
+    <circle cx="12" cy="12" r="8.5" strokeDasharray="3 2.5" />
+    <circle cx="12" cy="12" r="2.5" />
+  </Glyph>
+);
+
 /** Settings: the sliders an operations manager actually moves. */
 export const IconSettings = (
   <Glyph>

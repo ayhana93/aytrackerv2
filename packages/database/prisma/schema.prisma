@@ -253,6 +253,8 @@ model Organization {
   trackingSessions TrackingSession[]
   locationPoints  LocationPoint[]
   trackingEvents  TrackingEvent[]
+  geofences       Geofence[]
+  geofenceVisits  GeofenceVisit[]
   fuelExpenses    FuelExpense[]
   vehicleExpenses VehicleExpense[]
   vehicleDocuments VehicleDocument[]
@@ -319,6 +321,22 @@ model OrganizationSettings {
   /// enters one — a fuel *estimate* without a price is arithmetic nobody asked for, so the
   /// screens show litres and stay silent about money rather than inventing a national average.
   fuelPricePerLiter Decimal? @db.Decimal(10, 4)
+
+  /// Speed limit for alerts, in km/h. Null means no speed alerting at all — and that is the
+  /// default. Reporting somebody for exceeding a number their employer never set is not a
+  /// feature, so there is no national default and no guess from the road type.
+  speedLimitKph          Int?
+  /// How long a reading must stay over the limit before it is an alert rather than a sample.
+  speedSustainedSeconds  Int @default(30)
+  /// How long after a stretch ends before another can be reported. Stop-start traffic crosses
+  /// the limit repeatedly; without this, one journey produces twenty alerts and gets muted.
+  speedCooldownSeconds   Int @default(600)
+
+  /// How far past a geofence's radius a device must travel before it counts as having left.
+  /// The anti-flap band: a phone parked on the boundary would otherwise fire all afternoon.
+  geofenceExitHysteresisMeters Int @default(40)
+  /// How long a crossing must hold before it is believed. Driving past a depot is not a visit.
+  geofenceDebounceSeconds      Int @default(90)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
@@ -512,6 +530,7 @@ model Site {
   workers   Worker[]
   shifts    Shift[]
   vehicles  Vehicle[]
+  geofences Geofence[]
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
@@ -1166,6 +1185,7 @@ model DriverTrip {
   /// day's session — one stream, two attributions.
   locationPoints  LocationPoint[]
   trackingEvents  TrackingEvent[]
+  geofenceVisits  GeofenceVisit[]
   trackingSession TrackingSession?
   fuelExpenses    FuelExpense[]
 
@@ -1259,6 +1279,7 @@ model TrackingSession {
 
   points         LocationPoint[]
   trackingEvents TrackingEvent[]
+  geofenceVisits GeofenceVisit[]
 
   @@index([organizationId, context, endedAt])
   @@index([organizationId, workerId, startedAt])
@@ -1323,6 +1344,12 @@ enum TrackingEventType {
   DEVICE_OFFLINE
   APP_NOT_REPORTING
   REPORTING_RECOVERED
+  /// Crossed into a geofence, confirmed after the debounce period.
+  GEOFENCE_ENTER
+  /// Crossed out of one, past the hysteresis band.
+  GEOFENCE_EXIT
+  /// A sustained stretch above the organization's configured limit. One event per stretch.
+  SPEED_EXCEEDED
 }
 
 /// A neutral, factual record of a tracking transition, on either context.
@@ -1356,6 +1383,90 @@ model TrackingEvent {
   @@index([organizationId, tripId, occurredAt])
   @@index([organizationId, type, occurredAt])
   @@map("tracking_events")
+}
+
+/// What a geofence is for: SITE is the company's own premises, CUSTOMER a place work is
+/// delivered to, RESTRICTED somewhere a vehicle is not supposed to be.
+enum GeofenceKind {
+  SITE
+  CUSTOMER
+  RESTRICTED
+  OTHER
+}
+
+/// A circle on the map that somebody cares about.
+///
+/// Deliberately a circle rather than a polygon. A radius is something a dispatcher can set from
+/// a phone in ten seconds and reason about afterwards ("within 150 m of the gate"); a polygon
+/// needs an editor, and every geofence in this product exists to answer a question about arrival
+/// rather than to trace a boundary exactly.
+model Geofence {
+  id             String       @id @default(uuid(7))
+  organizationId String
+  name           String
+  kind           GeofenceKind @default(CUSTOMER)
+
+  centerLatitude  Decimal @db.Decimal(9, 6)
+  centerLongitude Decimal @db.Decimal(9, 6)
+  /// Metres. Bounded by a check constraint: a 5 m fence is inside GPS error, and a 50 km one is
+  /// not a place.
+  radiusMeters    Int
+
+  /// The site this fence belongs to, when it is one of the company's own. Optional: a customer
+  /// address belongs to no site.
+  siteId   String?
+  isActive Boolean @default(true)
+  notes    String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site         Site?        @relation(fields: [siteId], references: [id], onDelete: SetNull)
+
+  visits GeofenceVisit[]
+
+  @@index([organizationId, isActive])
+  @@unique([organizationId, id], map: "geofences_tenant_key")
+  @@map("geofences")
+}
+
+/// One confirmed stay inside a fence.
+///
+/// An open row — `exitedAt` null — is what "currently on site" means, so the live screens need
+/// no separate state table. Visits are recomputed from the stored points, so a late offline
+/// replay that fills in an afternoon corrects the record rather than appending a second version
+/// of it.
+model GeofenceVisit {
+  id                String @id @default(uuid(7))
+  organizationId    String
+  geofenceId        String
+  trackingSessionId String
+  /// Set when the visit happened during a driver trip. The same overlay LocationPoint uses.
+  tripId            String?
+
+  enteredAt DateTime  @db.Timestamptz(6)
+  exitedAt  DateTime? @db.Timestamptz(6)
+  /// Seconds between entry and exit, or entry and the last known fix while still open.
+  dwellSeconds Int    @default(0)
+
+  entryLatitude  Decimal @db.Decimal(9, 6)
+  entryLongitude Decimal @db.Decimal(9, 6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  geofence        Geofence        @relation(fields: [geofenceId], references: [id], onDelete: Cascade)
+  trackingSession TrackingSession @relation(fields: [trackingSessionId], references: [id], onDelete: Cascade)
+  trip            DriverTrip?     @relation(fields: [tripId], references: [id], onDelete: SetNull)
+
+  /// One visit per fence per session per entry time. Recomputation upserts on this rather than
+  /// inserting a duplicate every time a batch arrives.
+  @@unique([trackingSessionId, geofenceId, enteredAt], map: "geofence_visits_occurrence_key")
+  @@index([organizationId, geofenceId, enteredAt])
+  @@index([organizationId, exitedAt])
+  @@map("geofence_visits")
 }
 
 model FuelExpense {

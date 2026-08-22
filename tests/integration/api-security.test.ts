@@ -1302,6 +1302,195 @@ describe('work tracking, and a driver trip inside it', () => {
   });
 
   /**
+   * Geofences, end to end: a fence, a stay inside it, and one visit with one pair of events.
+   *
+   * The assertions that matter are the counts. Everything here is recomputed from the whole point
+   * stream on every batch, so the failure this guards against is not "nothing happened" but "it
+   * happened again, and again, and again" — a visit row per upload and an event log nobody can
+   * read.
+   */
+  it('records one visit for one stay, however many batches it took', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const admin = await loginAdmin();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/geofences',
+      headers: { cookie: admin.cookies, 'x-csrf-token': admin.csrfToken },
+      payload: {
+        name: 'Клиент',
+        kind: 'CUSTOMER',
+        latitude: 42.75,
+        longitude: 23.4,
+        radiusMeters: 200,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const geofenceId = created.json().geofence.id;
+
+    // Away, then inside for twelve minutes, then away again — sent as two separate uploads so a
+    // crossing has to survive being split across batches.
+    const base = Date.now() - 25 * 60 * 1000;
+    const upload = (points: readonly { minute: number; lat: number; lon: number }[]) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/tracking/points',
+        headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+        payload: {
+          clientActionId: randomUUID(),
+          deviceReported: 'ONLINE',
+          points: points.map((point) => ({
+            timestamp: new Date(base + point.minute * 60_000).toISOString(),
+            latitude: point.lat,
+            longitude: point.lon,
+            accuracyMeters: 8,
+            speedMps: 0,
+          })),
+        },
+      });
+
+    const approach = Array.from({ length: 4 }, (_, index) => ({
+      minute: index,
+      lat: 42.7 + index * 0.005,
+      lon: 23.35 + index * 0.005,
+    }));
+    const inside = Array.from({ length: 12 }, (_, index) => ({
+      minute: 4 + index,
+      lat: 42.7501,
+      lon: 23.4001,
+    }));
+    const away = Array.from({ length: 4 }, (_, index) => ({
+      minute: 16 + index,
+      lat: 42.76 + index * 0.01,
+      lon: 23.42 + index * 0.01,
+    }));
+
+    expect((await upload([...approach, ...inside])).statusCode).toBe(200);
+    expect((await upload(away)).statusCode).toBe(200);
+
+    const visits = await app.inject({
+      method: 'GET',
+      url: `/api/v1/admin/geofences/${geofenceId}/visits`,
+      headers: { cookie: admin.cookies },
+    });
+    expect(visits.statusCode).toBe(200);
+    expect(visits.json().visits).toHaveLength(1);
+    expect(visits.json().visits[0].isOpen).toBe(false);
+    expect(visits.json().visits[0].dwellSeconds).toBeGreaterThan(0);
+
+    const events = await prisma.trackingEvent.groupBy({
+      by: ['type'],
+      where: {
+        organizationId: tenant.organizationId,
+        trackingSessionId,
+        type: { in: ['GEOFENCE_ENTER', 'GEOFENCE_EXIT'] },
+      },
+      _count: { _all: true },
+    });
+    expect(events.map((row) => [row.type, row._count._all]).sort()).toEqual([
+      ['GEOFENCE_ENTER', 1],
+      ['GEOFENCE_EXIT', 1],
+    ]);
+
+    // Re-sending changes nothing: the derivation is idempotent, not append-only.
+    expect((await upload([...approach, ...inside])).statusCode).toBe(200);
+    expect(
+      await prisma.geofenceVisit.count({
+        where: { organizationId: tenant.organizationId, trackingSessionId },
+      }),
+    ).toBe(1);
+  });
+
+  /**
+   * Speed alerting is off until somebody sets a limit, and one stretch is one alert.
+   *
+   * Both halves matter. A default limit would report employees against a number their employer
+   * never chose; an alert per sample would bury the one that mattered under two hundred that
+   * did not.
+   */
+  it('says nothing about speed until a limit is set, then reports a stretch once', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const fast = (from: number) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/tracking/points',
+        headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+        payload: {
+          clientActionId: randomUUID(),
+          deviceReported: 'ONLINE',
+          points: Array.from({ length: 6 }, (_, index) => ({
+            timestamp: new Date(Date.now() - (from - index) * 60_000).toISOString(),
+            latitude: 42.7 + index * 0.01,
+            longitude: 23.35 + index * 0.01,
+            accuracyMeters: 8,
+            speedMps: 33, // ~119 km/h
+          })),
+        },
+      });
+
+    expect((await fast(20)).statusCode).toBe(200);
+    // No limit configured: nothing to exceed.
+    expect(
+      await prisma.trackingEvent.count({
+        where: { organizationId: tenant.organizationId, trackingSessionId, type: 'SPEED_EXCEEDED' },
+      }),
+    ).toBe(0);
+
+    const admin = await loginAdmin();
+    const saved = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': admin.csrfToken },
+      payload: { speedLimitKph: 90 },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().speedLimitKph).toBe(90);
+
+    // The same stretch, now measured against a limit. Two more uploads must not multiply it.
+    expect((await fast(14)).statusCode).toBe(200);
+    expect((await fast(8)).statusCode).toBe(200);
+
+    const alerts = await prisma.trackingEvent.findMany({
+      where: { organizationId: tenant.organizationId, trackingSessionId, type: 'SPEED_EXCEEDED' },
+      select: { metadata: true },
+    });
+    expect(alerts).toHaveLength(1);
+    expect((alerts[0]!.metadata as { peakKph: number }).peakKph).toBeGreaterThanOrEqual(118);
+
+    // And clearing the limit turns it off again, rather than falling back to some default.
+    const cleared = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': admin.csrfToken },
+      payload: { speedLimitKph: null },
+    });
+    expect(cleared.json().speedLimitKph).toBeNull();
+  });
+
+  it('counts the workforce in the database, not from a capped list', async () => {
+    const worker = await loginWorker();
+    await startShift(worker);
+
+    const admin = await loginAdmin();
+    const workforce = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/workforce',
+      headers: { cookie: admin.cookies },
+    });
+    expect(workforce.statusCode).toBe(200);
+    const counts = workforce.json().counts;
+    expect(counts.employed).toBeGreaterThan(0);
+    expect(counts.working).toBeGreaterThanOrEqual(1);
+    // Someone whose phone has gone quiet is still at work. The count says so separately rather
+    // than folding them into "working" as though we could still see them.
+    expect(counts).toHaveProperty('notReporting');
+    expect(counts).toHaveProperty('untracked');
+  });
+
+  /**
    * The one question the live map exists to answer: who has which van, and where is it.
    *
    * A worker who takes a vehicle keeps their WORK session — the trip is an overlay on the day,

@@ -85,6 +85,9 @@ export const bg: MessageCatalog = {
   'tracking.event.device_offline': 'Устройството е офлайн',
   'tracking.event.app_not_reporting': 'Приложението не изпраща данни',
   'tracking.event.reporting_recovered': 'Данните за местоположение се възобновиха',
+  'tracking.event.geofence_enter': 'Влизане в зона {name}',
+  'tracking.event.geofence_exit': 'Излизане от зона {name}',
+  'tracking.event.speed_exceeded': 'Превишена скорост: {peak} км/ч при ограничение {limit} км/ч',
   'tracking.gap': 'Няма данни за местоположение между {from} и {to}',
   'tracking.permission_prompt': 'AYtracker се нуждае от достъп до местоположението за този курс.',
 

@@ -1,15 +1,21 @@
 import { type Clock, type EventBus } from '@aytracker/domain';
 import type { DriverId, OrganizationId, VehicleId, WorkerId } from '@aytracker/types';
 import {
+  DEFAULT_GEOFENCE_OPTIONS,
   DEFAULT_SAMPLING_POLICY,
+  DEFAULT_SPEED_ALERT_OPTIONS,
   // The package's own admission control is the sampling floor, and shares a name with this
   // module's session admission. Aliased so the two are never confused at a call site.
   admitPoints as admitAtInterval,
   computeTrackDistance,
   deriveTrackingState,
+  detectGeofenceVisits,
+  detectSpeedAlerts,
   eventForTransition,
   findTrackingGaps,
   totalGapSeconds,
+  type GeofenceOptions,
+  type SpeedAlertOptions,
   type TrackingState,
 } from '@aytracker/tracking';
 import { admitPoints, type RawLocationPoint } from '../domain/admission.js';
@@ -21,7 +27,11 @@ import {
   type TrackingSessionId,
   type TrackingSessionState,
 } from '../domain/session.js';
-import type { TrackingTransactionRunner } from '../domain/ports.js';
+import type {
+  TrackedPoint,
+  TrackingTransactionRunner,
+  TrackingUnitOfWork,
+} from '../domain/ports.js';
 
 /**
  * The one place location is written.
@@ -297,6 +307,15 @@ export class TrackingCommandService {
     backfillThresholdSeconds?: number;
     /** The organization's sampling floor. The device is told this; here it is enforced. */
     minIntervalSeconds?: number;
+    /** Set false to skip geofence derivation entirely — used by tests and by bulk imports. */
+    geofencing?: boolean;
+    geofenceOptions?: Partial<GeofenceOptions>;
+    /**
+     * The organization's speed limit in km/h, or null/absent for no speed alerting at all.
+     * There is no default: alerting on a number nobody set is not a feature.
+     */
+    speedLimitKph?: number | null;
+    speedAlertOptions?: Partial<Omit<SpeedAlertOptions, 'limitKph'>>;
   }): Promise<{
     accepted: number;
     rejected: number;
@@ -425,6 +444,42 @@ export class TrackingCommandService {
         }
       }
 
+      /**
+       * What the day's points imply about places and speed.
+       *
+       * Both derivations are skipped entirely unless the organization configured them — no
+       * fences, no speed limit, no work. That matters because both recompute over the session's
+       * whole point stream rather than over the batch: a crossing that takes ninety seconds to
+       * confirm can straddle two uploads, and a speeding stretch can straddle five, so deciding
+       * either from one batch would produce a different answer depending on how the phone
+       * happened to group its points. Recomputing is also what lets a late offline replay
+       * *correct* an afternoon rather than append a second version of it.
+       */
+      if (input.geofencing !== false) {
+        await this.deriveGeofenceVisits({
+          uow,
+          organizationId: input.organizationId,
+          session: open,
+          points: allPoints,
+          state,
+          options: input.geofenceOptions,
+        });
+      }
+      if (input.speedLimitKph) {
+        await this.deriveSpeedAlerts({
+          uow,
+          organizationId: input.organizationId,
+          session: open,
+          points: allPoints,
+          state,
+          options: {
+            ...DEFAULT_SPEED_ALERT_OPTIONS,
+            ...input.speedAlertOptions,
+            limitKph: input.speedLimitKph,
+          },
+        });
+      }
+
       await uow.sessions.updateLiveState({
         organizationId: input.organizationId,
         sessionId: open.id,
@@ -447,6 +502,134 @@ export class TrackingCommandService {
         distanceMeters: distance.distanceMeters,
       };
     });
+  }
+
+  /**
+   * Recomputes this session's geofence visits and logs the crossings that are new.
+   *
+   * The visit rows are made equal to what the points support — created, closed or removed — and
+   * only the differences produce events. Logging every re-derived crossing would fill the event
+   * log with the same arrival two hundred times over the course of an afternoon.
+   */
+  private async deriveGeofenceVisits(input: {
+    uow: TrackingUnitOfWork;
+    organizationId: OrganizationId;
+    session: TrackingSessionState;
+    points: readonly TrackedPoint[];
+    state: TrackingState;
+    options?: Partial<GeofenceOptions>;
+  }): Promise<void> {
+    const fences = await input.uow.geofences.listActive(input.organizationId);
+    if (fences.length === 0) return;
+
+    const visits = detectGeofenceVisits(input.points, fences, {
+      ...DEFAULT_GEOFENCE_OPTIONS,
+      ...input.options,
+    });
+
+    const nameById = new Map(fences.map((fence) => [fence.id, fence.name]));
+    // The trip overlay is read off the point the crossing was observed at, exactly as it is for
+    // the point itself — so a visit made during a trip carries the trip, and one made on foot
+    // between two trips does not.
+    const tripAt = new Map(input.points.map((point) => [point.timestamp.getTime(), point.tripId]));
+
+    const computed = visits.map((visit) => ({
+      ...visit,
+      geofenceName: nameById.get(visit.geofenceId) ?? '',
+      tripId: tripAt.get(visit.enteredAt.getTime()) ?? null,
+    }));
+
+    const { entered, exited } = await input.uow.geofences.syncVisits({
+      organizationId: input.organizationId,
+      trackingSessionId: input.session.id,
+      visits: computed,
+    });
+
+    for (const visit of entered) {
+      await input.uow.events.record({
+        organizationId: input.organizationId,
+        trackingSessionId: input.session.id,
+        tripId: visit.tripId,
+        type: 'GEOFENCE_ENTER',
+        state: input.state,
+        occurredAt: visit.enteredAt,
+        lastLatitude: visit.entryLatitude,
+        lastLongitude: visit.entryLongitude,
+        metadata: { geofenceId: visit.geofenceId, geofenceName: visit.geofenceName },
+      });
+    }
+    for (const visit of exited) {
+      if (!visit.exitedAt) continue;
+      await input.uow.events.record({
+        organizationId: input.organizationId,
+        trackingSessionId: input.session.id,
+        tripId: visit.tripId,
+        type: 'GEOFENCE_EXIT',
+        state: input.state,
+        occurredAt: visit.exitedAt,
+        metadata: {
+          geofenceId: visit.geofenceId,
+          geofenceName: visit.geofenceName,
+          dwellSeconds: visit.dwellSeconds,
+        },
+      });
+    }
+  }
+
+  /**
+   * Recomputes this session's speeding stretches and logs the ones not already logged.
+   *
+   * One event per stretch, keyed on when the stretch began. A stretch that is still in progress
+   * gets its event once and is not re-logged as it lengthens: a supervisor needs to know it is
+   * happening, not to be told again every fifteen seconds while it continues.
+   */
+  private async deriveSpeedAlerts(input: {
+    uow: TrackingUnitOfWork;
+    organizationId: OrganizationId;
+    session: TrackingSessionState;
+    points: readonly TrackedPoint[];
+    state: TrackingState;
+    options: SpeedAlertOptions;
+  }): Promise<void> {
+    const alerts = detectSpeedAlerts(input.points, input.options);
+    if (alerts.length === 0) return;
+
+    const logged = new Set(
+      (
+        await input.uow.events.occurrencesOf(
+          input.organizationId,
+          input.session.id,
+          'SPEED_EXCEEDED',
+        )
+      ).map((occurredAt) => occurredAt.getTime()),
+    );
+    const tripAt = new Map(input.points.map((point) => [point.timestamp.getTime(), point.tripId]));
+
+    for (const alert of alerts) {
+      if (logged.has(alert.startedAt.getTime())) continue;
+      await input.uow.events.record({
+        organizationId: input.organizationId,
+        trackingSessionId: input.session.id,
+        tripId: tripAt.get(alert.startedAt.getTime()) ?? null,
+        type: 'SPEED_EXCEEDED',
+        state: input.state,
+        occurredAt: alert.startedAt,
+        lastLatitude: alert.latitude,
+        lastLongitude: alert.longitude,
+        metadata: {
+          peakKph: alert.peakKph,
+          limitKph: alert.limitKph,
+          endedAt: alert.endedAt.toISOString(),
+          durationSeconds: Math.round((alert.endedAt.getTime() - alert.startedAt.getTime()) / 1000),
+          /**
+           * How the speed was established. A figure derived from two positions is weaker
+           * evidence than one the receiver measured, and anything acting on this event — a
+           * report, a conversation with a driver — should be able to tell which it is.
+           */
+          source: alert.source,
+        },
+      });
+    }
   }
 
   /**
