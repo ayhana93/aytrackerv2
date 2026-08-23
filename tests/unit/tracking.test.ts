@@ -385,6 +385,33 @@ describe('fuel calculations', () => {
     expect(toLitersPer100Km(30, 'MPG_UK')).toBeCloseTo(9.42, 2);
   });
 
+  /**
+   * A pump price has three decimals; the euro has two.
+   *
+   * This used to throw `money.excess_precision` outright, because the unit price was passed
+   * through `money()` before the multiplication — so every fuel figure in an organization that
+   * had entered a realistic price failed rather than being slightly off.
+   */
+  it('costs fuel at a unit price finer than the currency', () => {
+    const estimate = estimateFuel({
+      distanceMeters: 100_000,
+      averageConsumption: 8.4,
+      consumptionUnit: 'L_PER_100KM',
+      pricePerLiter: '1.759',
+      currency: 'EUR',
+    });
+    expect(estimate.liters).toBe(8.4);
+    // 8.4 × 1.759 = 14.7756 → one rounding, at the end.
+    expect(estimate.cost.amount).toBe('14.78');
+  });
+
+  it('keeps the unit price exact through a fuel receipt total', () => {
+    // 45.37 L at 1.759 = 79.805... Rounding the price to 1.76 first would give 79.85.
+    expect(
+      calculateFuelTotal({ liters: '45.37', pricePerLiter: '1.759', currency: 'EUR' }).amount,
+    ).toBe('79.81');
+  });
+
   /** The client's total is never trusted; it is recomputed from litres and unit price. */
   it('computes a fuel total from litres and unit price', () => {
     expect(

@@ -74,11 +74,18 @@ const COLUMNS: readonly Column<ActivePosition>[] = [
 
 export default function PeoplePage() {
   const state = useApi(() => adminApi.dashboard(), []);
+  /**
+   * The counts come from the server, not from the length of the table below.
+   *
+   * The list is capped. Counting its rows would report a smaller workforce the moment an
+   * organization outgrew the cap — and it would look entirely plausible while doing it, which is
+   * the worst kind of wrong number.
+   */
+  const workforce = useApi(() => adminApi.workforce(), []);
   const data = state.status === 'ready' ? state.data : null;
+  const counts = workforce.status === 'ready' ? workforce.data.counts : null;
   const loading = state.status === 'loading';
   const people = data?.activePositions ?? [];
-  const onBreak = people.filter((row) => row.onBreak).length;
-  const driving = people.filter((row) => row.kind === 'DRIVING' && !row.onBreak).length;
 
   return (
     <>
@@ -96,15 +103,34 @@ export default function PeoplePage() {
         ) : null}
 
         <Grid>
-          <Kpi label="На смяна" value={loading ? '—' : String(people.length)} caption="в момента" />
-          <Kpi label="На път" value={loading ? '—' : String(driving)} caption="шофьори" />
-          <Kpi label="На почивка" value={loading ? '—' : String(onBreak)} caption="в момента" />
+          <Kpi
+            label="Служители"
+            value={counts ? String(counts.employed) : '—'}
+            caption="активни в системата"
+          />
+          <Kpi label="Работят" value={counts ? String(counts.working) : '—'} caption="в момента" />
+          <Kpi
+            label="На почивка"
+            value={counts ? String(counts.onBreak) : '—'}
+            caption="в момента"
+          />
+          <Kpi label="На път" value={counts ? String(counts.driving) : '—'} caption="с автомобил" />
+          {/*
+            Shown separately rather than folded into "работят". Someone whose phone has gone quiet
+            is still at work; what we have lost is the ability to say where. Counting them as
+            tracked would be the first small lie a tracking product tells.
+          */}
+          <Kpi
+            label="Без сигнал"
+            value={counts ? String(counts.notReporting + counts.untracked) : '—'}
+            caption="на работа, без данни"
+          />
         </Grid>
 
         <Card padded={false}>
           <CardHeader>
             <h2 className="ay-h3">На смяна</h2>
-            {data ? <Badge tone="success">{people.length}</Badge> : null}
+            {counts ? <Badge tone="success">{counts.working + counts.onBreak}</Badge> : null}
           </CardHeader>
           <DataTable
             columns={COLUMNS}

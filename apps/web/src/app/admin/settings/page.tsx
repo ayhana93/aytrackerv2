@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   AdminBody,
   AdminHeader,
@@ -18,6 +18,7 @@ import {
   type LogoRow,
   type MemberRow,
   type OrganizationProfile,
+  type SettingsResponse,
 } from '../../../lib/admin';
 import { ApiError } from '../../../lib/api';
 import { BrandMark } from '../../../components/brand-mark';
@@ -25,7 +26,13 @@ import { PRODUCT_NAME } from '../../../lib/brand';
 import { useSessionContext } from '../auth-guard';
 
 /**
- * Organization settings.
+ * Settings.
+ *
+ * Two kinds of thing live here, and they are deliberately on one screen rather than two: who the
+ * organization *is* (name, logo, administrators) and how the product *behaves* for it (the fuel
+ * price, shift policy, the GPS sampling floor, the speed limit and the geofence tuning). An
+ * operations manager opening "Настройки" is looking for whichever of those they need, and making
+ * them guess which of two screens it is on is a worse split than a longer page.
  *
  * Three things an organization has to be able to change about itself without asking anybody:
  * what it is called, what its logo is, and which address its administrators sign in with. Until
@@ -87,6 +94,13 @@ export default function SettingsPage() {
         ) : null}
 
         {may('users.manage') ? <MembersSection version={version} onChanged={reload} /> : null}
+
+        {/*
+          How the product behaves, as opposed to who the organization is. Gated on its own
+          permission and hidden rather than disabled when it is missing — a greyed-out form is a
+          promise the button might work; an absent section says plainly this is somebody else's job.
+        */}
+        {may('settings.read') ? <OperationalSection editable={may('settings.update')} /> : null}
       </AdminBody>
     </>
   );
@@ -628,4 +642,343 @@ function emailProblem(caught: unknown): string {
     return 'Този акаунт е администратор на платформата и не се управлява от тук.';
   }
   return describeError(caught);
+}
+
+/* ------------------------------------------------------------- operational -- */
+
+/**
+ * The operational settings, loaded on their own.
+ *
+ * A separate request from the organization profile because they answer different questions and
+ * have different permissions; a single combined read would make the whole screen unavailable to
+ * somebody who may see one half of it.
+ */
+function OperationalSection({ editable }: { editable: boolean }) {
+  const state = useApi(() => adminApi.settings(), []);
+
+  if (state.status === 'error') {
+    return (
+      <Card>
+        <p className="ay-small">{describeError(state.error)}</p>
+      </Card>
+    );
+  }
+  if (state.status !== 'ready') {
+    return (
+      <Card>
+        <p className="ay-small ay-muted">Зареждане…</p>
+      </Card>
+    );
+  }
+
+  return <SettingsForm initial={state.data} editable={editable} />;
+}
+
+function SettingsForm({ initial, editable }: { initial: SettingsResponse; editable: boolean }) {
+  const [settings, setSettings] = useState(initial);
+  const [fuelPrice, setFuelPrice] = useState(initial.fuelPricePerLiter ?? '');
+  const [selfStart, setSelfStart] = useState(initial.allowWorkerSelfShiftStart);
+  const [maxShift, setMaxShift] = useState(String(initial.maxShiftDurationMinutes));
+  const [gpsInterval, setGpsInterval] = useState(String(initial.gpsMinIntervalSeconds));
+  const [gpsDistance, setGpsDistance] = useState(String(initial.gpsMinDistanceMeters));
+  /**
+   * The speed limit is a string because an empty field is a meaningful value here.
+   *
+   * Empty means "no limit set", and no limit means no speed alerts at all. It is deliberately not
+   * a number input defaulting to something plausible: a limit nobody chose is a limit nobody can
+   * be held to, and this figure ends up in conversations about people's driving.
+   */
+  const [speedLimit, setSpeedLimit] = useState(
+    initial.speedLimitKph === null ? '' : String(initial.speedLimitKph),
+  );
+  const [speedSustained, setSpeedSustained] = useState(String(initial.speedSustainedSeconds));
+  const [speedCooldown, setSpeedCooldown] = useState(String(initial.speedCooldownSeconds));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // The confirmation is a moment, not a state. Left on screen it becomes wallpaper, and the next
+  // save produces no visible change at all.
+  useEffect(() => {
+    if (!saved) return;
+    const timer = setTimeout(() => setSaved(false), 4000);
+    return () => clearTimeout(timer);
+  }, [saved]);
+
+  const price = fuelPrice.trim().replace(',', '.');
+  const priceValid = price === '' || (/^\d{1,6}(\.\d{1,4})?$/.test(price) && Number(price) > 0);
+  const minutes = Number(maxShift);
+  const shiftValid = Number.isInteger(minutes) && minutes >= 60 && minutes <= 1440;
+  const interval = Number(gpsInterval);
+  const intervalValid = Number.isInteger(interval) && interval >= 5 && interval <= 300;
+  const distance = Number(gpsDistance);
+  const distanceValid = Number.isInteger(distance) && distance >= 10 && distance <= 2000;
+  const limit = speedLimit.trim();
+  const limitValid =
+    limit === '' || (Number.isInteger(Number(limit)) && Number(limit) >= 1 && Number(limit) <= 300);
+  const sustained = Number(speedSustained);
+  const cooldown = Number(speedCooldown);
+  const windowsValid =
+    Number.isInteger(sustained) &&
+    sustained >= 5 &&
+    sustained <= 600 &&
+    Number.isInteger(cooldown) &&
+    cooldown >= 0 &&
+    cooldown <= 7200;
+  const valid =
+    priceValid && shiftValid && intervalValid && distanceValid && limitValid && windowsValid;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!valid || saving) return;
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+
+    adminApi
+      .updateSettings({
+        // An empty field means "no price", which is a real choice and different from omitting
+        // the field. Sent as null so the server clears it rather than keeping the old one.
+        fuelPricePerLiter: price === '' ? null : price,
+        allowWorkerSelfShiftStart: selfStart,
+        maxShiftDurationMinutes: minutes,
+        gpsMinIntervalSeconds: interval,
+        gpsMinDistanceMeters: distance,
+        // Empty means off, and off has to be sent as null — omitting it would leave whatever
+        // limit was there before, which is the opposite of what clearing the field means.
+        speedLimitKph: limit === '' ? null : Number(limit),
+        speedSustainedSeconds: sustained,
+        speedCooldownSeconds: cooldown,
+      })
+      .then((next) => {
+        setSettings(next);
+        setFuelPrice(next.fuelPricePerLiter ?? '');
+        setSpeedLimit(next.speedLimitKph === null ? '' : String(next.speedLimitKph));
+        setSaved(true);
+      })
+      .catch((caught: unknown) => {
+        setError(
+          caught instanceof ApiError ? describeError(caught) : 'Настройките не бяха записани.',
+        );
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <form onSubmit={submit} style={{ display: 'grid', gap: 'var(--ay-space-5)' }}>
+      <Card padded={false}>
+        <CardHeader>
+          <div>
+            <h2 className="ay-h3">Гориво</h2>
+            <p className="ay-caption ay-muted">
+              Без цена системата показва литри, но не и стойност. Нищо не се измисля.
+            </p>
+          </div>
+        </CardHeader>
+        <div style={{ padding: 'var(--ay-space-5)', display: 'grid', gap: 'var(--ay-space-4)' }}>
+          <Field
+            label={`Цена на литър (${settings.currency})`}
+            hint="Например 2.45. Оставете празно, ако не искате прогнози за стойност."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="text"
+              inputMode="decimal"
+              value={fuelPrice}
+              placeholder="2.45"
+              onChange={(event) => setFuelPrice(event.target.value.replace(/[^\d.,]/g, ''))}
+            />
+          </Field>
+          {!priceValid ? (
+            <p className="ay-small" style={{ color: 'var(--ay-danger)' }}>
+              Въведете цена като 2.45.
+            </p>
+          ) : null}
+          <p className="ay-caption ay-muted">
+            Разходът за курс се изчислява от изминатите километри и средния разход на автомобила,
+            който се въвежда в „Автопарк“. Това винаги е прогноза — реалните разходи идват от
+            касовите бележки.
+          </p>
+        </div>
+      </Card>
+
+      <Card padded={false}>
+        <CardHeader>
+          <div>
+            <h2 className="ay-h3">Смени</h2>
+            <p className="ay-caption ay-muted">Кой започва смяна и колко дълго може да е тя.</p>
+          </div>
+        </CardHeader>
+        <div style={{ padding: 'var(--ay-space-5)', display: 'grid', gap: 'var(--ay-space-4)' }}>
+          <label
+            className="ay-small"
+            style={{ display: 'flex', gap: 'var(--ay-space-3)', alignItems: 'flex-start' }}
+          >
+            <input
+              type="checkbox"
+              checked={selfStart}
+              onChange={(event) => setSelfStart(event.target.checked)}
+              style={{ marginTop: '0.2rem' }}
+            />
+            <span>
+              Работниците могат сами да започват смяна
+              <span className="ay-caption ay-muted" style={{ display: 'block' }}>
+                Ако е изключено, смяната се започва само от ръководител.
+              </span>
+            </span>
+          </label>
+
+          <Field
+            label="Максимална дължина на смяна (минути)"
+            hint="Забравена смяна се затваря автоматично на този таван, а не в 03:00 сутринта."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={60}
+              max={1440}
+              value={maxShift}
+              onChange={(event) => setMaxShift(event.target.value)}
+            />
+          </Field>
+          {!shiftValid ? (
+            <p className="ay-small" style={{ color: 'var(--ay-danger)' }}>
+              Между 60 и 1440 минути.
+            </p>
+          ) : null}
+        </div>
+      </Card>
+
+      <Card padded={false}>
+        <CardHeader>
+          <div>
+            <h2 className="ay-h3">Проследяване</h2>
+            <p className="ay-caption ay-muted">
+              Колко често телефоните на шофьорите изпращат позиция.
+            </p>
+          </div>
+        </CardHeader>
+        <div style={{ padding: 'var(--ay-space-5)', display: 'grid', gap: 'var(--ay-space-4)' }}>
+          <Field
+            label="Минимален интервал (секунди)"
+            hint="По-малка стойност е по-точно, но изразходва повече батерия."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={5}
+              max={300}
+              value={gpsInterval}
+              onChange={(event) => setGpsInterval(event.target.value)}
+            />
+          </Field>
+
+          <Field
+            label="Минимално разстояние (метри)"
+            hint="Точки по-близки от това не се изпращат — така спиране на светофар не пълни маршрута."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={10}
+              max={2000}
+              value={gpsDistance}
+              onChange={(event) => setGpsDistance(event.target.value)}
+            />
+          </Field>
+
+          {!intervalValid || !distanceValid ? (
+            <p className="ay-small" style={{ color: 'var(--ay-danger)' }}>
+              Интервалът е между 5 и 300 секунди, разстоянието между 10 и 2000 метра.
+            </p>
+          ) : null}
+
+          <p className="ay-caption ay-muted">
+            Курсът се записва непрекъснато от началото до края. Шофьорът няма бутон за пауза —
+            спиранията се виждат сами на маршрута.
+          </p>
+        </div>
+      </Card>
+
+      <Card padded={false}>
+        <CardHeader>
+          <div>
+            <h2 className="ay-h3">Скорост</h2>
+            <p className="ay-caption ay-muted">
+              Без зададено ограничение системата не следи скоростта изобщо.
+            </p>
+          </div>
+        </CardHeader>
+        <div style={{ padding: 'var(--ay-space-5)', display: 'grid', gap: 'var(--ay-space-4)' }}>
+          <Field
+            label="Ограничение (км/ч)"
+            hint="Празно поле означава, че няма сигнали за скорост. Не се подразбира стойност."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={1}
+              max={300}
+              placeholder="няма"
+              value={speedLimit}
+              onChange={(event) => setSpeedLimit(event.target.value)}
+            />
+          </Field>
+
+          <Field
+            label="Продължителност преди сигнал (секунди)"
+            hint="Едно засичане е измерване. Половин минута над ограничението е шофиране."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={5}
+              max={600}
+              value={speedSustained}
+              onChange={(event) => setSpeedSustained(event.target.value)}
+              disabled={limit === ''}
+            />
+          </Field>
+
+          <Field
+            label="Пауза между сигнали (секунди)"
+            hint="Без нея едно пътуване по магистрала дава двайсет сигнала и никой не ги чете."
+          >
+            <input
+              className="ay-input ay-numeric"
+              type="number"
+              min={0}
+              max={7200}
+              value={speedCooldown}
+              onChange={(event) => setSpeedCooldown(event.target.value)}
+              disabled={limit === ''}
+            />
+          </Field>
+
+          {!limitValid || !windowsValid ? (
+            <p className="ay-small" style={{ color: 'var(--ay-danger)' }}>
+              Ограничението е между 1 и 300 км/ч, продължителността между 5 и 600 секунди.
+            </p>
+          ) : null}
+        </div>
+      </Card>
+
+      {error ? (
+        <p className="ay-small" style={{ color: 'var(--ay-danger)' }} role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      <div style={{ display: 'flex', gap: 'var(--ay-space-3)', alignItems: 'center' }}>
+        <Button type="submit" disabled={saving || !valid || !editable}>
+          {saving ? 'Записване…' : 'Запишете настройките'}
+        </Button>
+        {saved ? (
+          <span className="ay-small" style={{ color: 'var(--ay-state-working)' }} role="status">
+            Записано.
+          </span>
+        ) : null}
+      </div>
+    </form>
+  );
 }

@@ -24,6 +24,7 @@
     "@aytracker/module-recommendations": "workspace:*",
     "@aytracker/module-reporting": "workspace:*",
     "@aytracker/module-shifts": "workspace:*",
+    "@aytracker/module-tracking": "workspace:*",
     "@aytracker/module-workforce": "workspace:*",
     "@aytracker/tracking": "workspace:*",
     "@aytracker/types": "workspace:*",

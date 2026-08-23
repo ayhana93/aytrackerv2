@@ -1,0 +1,51 @@
+<!--
+  Android permissions and the foreground service.
+
+  These lines go into android/app/src/main/AndroidManifest.xml after `pnpm cap:add:android`
+  generates it. They are kept here, in the repository, because that generated file is not
+  committed and a fleet-tracking app whose foreground service declaration was reconstructed from
+  memory during a release is an app that stops recording the moment the screen turns off.
+
+  WHY EACH LINE EXISTS
+
+  ACCESS_FINE_LOCATION       — a coarse fix is a cell tower. It cannot measure a route.
+  ACCESS_BACKGROUND_LOCATION — without it recording stops the moment the app leaves the screen,
+                               which is most of a driving day. Google requires a written
+                               justification and a video for this one; the justification is the
+                               product itself: recording work routes during an authorised shift,
+                               started by the employee, stopped when the shift ends.
+  FOREGROUND_SERVICE         — the service that keeps the GPS alive.
+  FOREGROUND_SERVICE_LOCATION — required from Android 14 for a service of type `location`.
+  POST_NOTIFICATIONS         — Android 13+ requires it before the persistent notification can be
+                               shown. The notification is not optional here in either direction:
+                               the platform demands it, and so does this product.
+
+  WHAT IS DELIBERATELY ABSENT
+
+  No ACCESS_MOCK_LOCATION, no receiver that starts recording on boot, and no service that runs
+  outside a session. There is no state this app can be in where it collects location and the
+  server has not authorised a shift or a trip.
+-->
+
+<!-- Inside <manifest>, before <application>: -->
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+<uses-feature android:name="android.hardware.location.gps" android:required="true" />
+
+<!--
+  Inside <application>. The plugin ships this service; it has to be declared with the location
+  type or Android 14 kills it on start with a ForegroundServiceTypeException.
+-->
+<service
+    android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
+    android:foregroundServiceType="location"
+    android:enabled="true"
+    android:exported="false" />

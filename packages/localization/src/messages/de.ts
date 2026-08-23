@@ -87,6 +87,9 @@ export const de: MessageCatalog = {
   'tracking.event.device_offline': 'Gerät offline',
   'tracking.event.app_not_reporting': 'App sendet keine Daten mehr',
   'tracking.event.reporting_recovered': 'Standortdaten werden wieder empfangen',
+  'tracking.event.geofence_enter': '{name} erreicht',
+  'tracking.event.geofence_exit': '{name} verlassen',
+  'tracking.event.speed_exceeded': 'Tempo {peak} km/h bei Limit {limit} km/h',
   'tracking.gap': 'Keine Standortdaten zwischen {from} und {to}',
   'tracking.permission_prompt': 'AYtracker benötigt Standortzugriff, um diese Fahrt aufzuzeichnen.',
 

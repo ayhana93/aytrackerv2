@@ -168,7 +168,7 @@ Enforced in `apps/api/src/plugins/authentication.ts` for POST, PUT, PATCH and DE
 | `POST /auth/login`        | 10/min per IP            |
 | `POST /auth/worker/login` | 5/min per IP             |
 | `POST /auth/driver/login` | 5/min per IP             |
-| `POST /driver/location`   | 120/min per organization |
+| `POST /tracking/points`   | 120/min per organization |
 | Everything else           | 300/min                  |
 
 Keyed by **organization** when authenticated and by IP otherwise. Keying purely by IP would let

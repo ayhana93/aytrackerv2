@@ -12,9 +12,17 @@ import { clientActionIdSchema, isoDateTimeSchema, uuidSchema } from './primitive
  * There is no `workerId` field anywhere here. That is not an oversight.
  */
 
+/**
+ * Clocking in.
+ *
+ * `siteId` is optional and, when absent, resolved from the worker's own record on the server.
+ * A worker knows which factory they walked into; they do not know its UUID, and requiring the
+ * device to supply one made "start a shift" impossible to call from a screen that has only a
+ * session. Supplying it stays available for a terminal fixed to one entrance.
+ */
 export const startShiftSchema = z.object({
   clientActionId: clientActionIdSchema,
-  siteId: uuidSchema,
+  siteId: uuidSchema.nullable().default(null),
   shiftTypeId: uuidSchema.nullable().default(null),
   initialPositionId: uuidSchema.nullable().default(null),
   occurredAt: isoDateTimeSchema.optional(),

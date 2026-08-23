@@ -107,6 +107,28 @@ export const IconRoute = (
   </Glyph>
 );
 
+/** Live: a location pin with a pulse. The one screen that answers "where is everyone". */
+export const IconLive = (
+  <Glyph>
+    <path d="M12 21s7-5.6 7-11a7 7 0 1 0-14 0c0 5.4 7 11 7 11Z" />
+    <circle cx="12" cy="10" r="2.5" />
+  </Glyph>
+);
+
+/**
+ * Geofences: a place, circled.
+ *
+ * Deliberately not another pin — `IconLive` is already a pin, and this entry answers a different
+ * question ("which places do we watch" rather than "where is everyone"). The circle around the
+ * marker is the fence itself, which is what the screen is about.
+ */
+export const IconGeofence = (
+  <Glyph>
+    <circle cx="12" cy="12" r="8.5" strokeDasharray="3 2.5" />
+    <circle cx="12" cy="12" r="2.5" />
+  </Glyph>
+);
+
 /**
  * Settings: a sliders panel rather than the usual cog.
  *

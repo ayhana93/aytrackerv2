@@ -31,7 +31,14 @@ export interface CollectorStatus {
 }
 
 export interface CollectorOptions {
-  readonly tripId: string;
+  /**
+   * The tracking session these points belong to.
+   *
+   * A session, not a trip: the same collector runs for an employee's working day and for a
+   * driver's trip, because they are one stream. It is the queue's partition key, so points from
+   * a session that has ended never leak into the next one.
+   */
+  readonly sessionId: string;
   readonly minIntervalSeconds: number;
   readonly minDistanceMeters: number;
   /** Uploads a batch. Resolves when the server has accepted it. */

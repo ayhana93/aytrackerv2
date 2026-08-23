@@ -55,6 +55,78 @@ export const updateBrandingSchema = z.object({
 });
 
 /**
+ * The settings that change how the product behaves day to day.
+ *
+ * Deliberately narrow. Retention windows and the tenant's own identity are not here: those are
+ * decisions with legal weight or with an audit trail behind them, and this is the screen an
+ * operations manager opens to say what a litre costs this month.
+ *
+ * Every field is optional, and a patch carries only what changed. `fuelPricePerLiter` accepts
+ * null explicitly — clearing it is a real intent ("we no longer want costs estimated"), and is
+ * different from omitting it.
+ */
+export const updateOperationalSettingsSchema = z.object({
+  /** Price of a litre in the organization's default currency, to four decimals. */
+  fuelPricePerLiter: z
+    .string()
+    .trim()
+    .regex(/^\d{1,6}(\.\d{1,4})?$/, 'Expected a price such as 2.45')
+    .refine((value) => Number(value) > 0, 'A price must be greater than zero')
+    .nullable()
+    .optional(),
+  /** False when only a supervisor may open a shift. */
+  allowWorkerSelfShiftStart: z.boolean().optional(),
+  /** After this long, an abandoned shift is auto-closed at the cap rather than left running. */
+  maxShiftDurationMinutes: z.number().int().min(60).max(1440).optional(),
+  /**
+   * The sampling floor handed to driver devices.
+   *
+   * Sent to the client and enforced on ingestion. Tightening it costs battery on every phone in
+   * the fleet, which is why the bounds are narrow rather than free.
+   */
+  gpsMinIntervalSeconds: z.number().int().min(5).max(300).optional(),
+  gpsMinDistanceMeters: z.number().int().min(10).max(2000).optional(),
+
+  /**
+   * The speed limit alerts are measured against, in km/h.
+   *
+   * Explicitly nullable, and null is the default: no limit means no speed alerting. There is no
+   * fallback number here on purpose — reporting an employee for exceeding a limit their employer
+   * never set is the kind of figure that ends up quoted in a disciplinary meeting.
+   */
+  speedLimitKph: z.number().int().min(1).max(300).nullable().optional(),
+  /** How long a reading must stay over the limit before it is an alert rather than a sample. */
+  speedSustainedSeconds: z.number().int().min(5).max(600).optional(),
+  /** How long after a stretch before another can be reported. Stop-start traffic needs this. */
+  speedCooldownSeconds: z.number().int().min(0).max(7200).optional(),
+
+  /** The geofence anti-flap band, in metres past the radius. */
+  geofenceExitHysteresisMeters: z.number().int().min(0).max(1000).optional(),
+  /** How long a crossing must hold before it counts as an arrival or a departure. */
+  geofenceDebounceSeconds: z.number().int().min(0).max(3600).optional(),
+});
+
+/**
+ * A geofence.
+ *
+ * A circle: a centre and a radius. The radius floor is not arbitrary — below about 20 m a fence
+ * is inside ordinary GPS error and would fire on a phone standing still on a pavement.
+ */
+export const createGeofenceSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  kind: z.enum(['SITE', 'CUSTOMER', 'RESTRICTED', 'OTHER']).default('CUSTOMER'),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  radiusMeters: z.number().int().min(20).max(50_000),
+  siteId: z.string().uuid().nullable().optional(),
+  notes: z.string().trim().max(500).nullable().optional(),
+});
+
+export const updateGeofenceSchema = createGeofenceSchema.partial().extend({
+  isActive: z.boolean().optional(),
+});
+
+/**
  * The organization's own name, changed from its settings screen.
  *
  * Only the two fields an admin has business editing. Country, billing country, currency and slug

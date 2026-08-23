@@ -68,7 +68,8 @@ export interface TrackingCapabilities {
 export interface NativeTrackingBridge {
   readonly version: string;
   start(options: {
-    tripId: string;
+    /** The tracking session, which may be a working day or a trip. */
+    sessionId: string;
     minIntervalSeconds: number;
     minDistanceMeters: number;
   }): Promise<void>;

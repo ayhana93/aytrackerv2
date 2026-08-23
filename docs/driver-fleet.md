@@ -30,25 +30,40 @@ Another driver's trip is **not found**, not forbidden — a 403 would confirm th
 ### Permissions
 
 ```
-driver.portal.access   driver.trip.start   driver.trip.pause   driver.trip.stop
-driver.location.submit driver.trip.history driver.vehicle.view
+driver.portal.access   driver.trip.start   driver.trip.stop
+driver.trip.history driver.vehicle.view tracking.submit
 ```
 
 The driver system role contains these and nothing else; a test asserts every entry starts with
-`driver.`.
+`driver.`. There is deliberately no `driver.trip.pause` — see § 2.
 
 ---
 
 ## 2. Trips
 
 ```
-PLANNED ──► ACTIVE ⇄ PAUSED ──► COMPLETED
-    └──────────┴────────┴──────► CANCELLED
+PLANNED ──► ACTIVE ──► COMPLETED
+    └────────┴────────► CANCELLED
 ```
 
-**The vehicle is resolved server-side** from the open assignment. `startTrip` takes no
-`vehicleId` — a driver cannot start a trip on a vehicle they do not hold, whatever the request
-body says.
+`PAUSED` is still in the enum and still handled by the arithmetic, because trips recorded before
+pausing was removed carry it. Nothing a driver can do produces it any more: **a trip records from
+the moment it starts until the driver ends it.** The pause control was the one way to keep the
+vehicle moving with the record switched off, which put a hundred kilometres of fuel against no
+trip; a stationary vehicle is already visible as a stop on its own track, without anyone pressing
+anything.
+
+**The vehicle is resolved server-side.** A driver who holds an assignment drives that vehicle,
+whatever the request body says. A driver who holds none — the ordinary case for someone who signs
+in at the driver door rather than arriving through the worker handoff — picks one from
+`GET /driver/vehicles`, which lists only what is active and unheld. The assignment that creates
+is marked automatic and is handed back when the trip ends; a fleet manager's standing assignment
+is never touched.
+
+**The route is optional.** `label` names it, `plannedDistanceKm` says how far it was expected to
+go, and a trip with neither is an ordinary trip — the record of where it went is the track. A
+planned distance without a label is refused: a number with no route attached cannot be checked
+afterwards. When both are present the trip is measured against them.
 
 Derived numbers are always server-computed:
 
@@ -62,9 +77,24 @@ Derived numbers are always server-computed:
 with no location arriving ([tracking.md](tracking.md) § 5). Distance is recomputed from every
 stored point at close.
 
-Pause intervals are reconstructed from the tracking-event log rather than a separate table — the
-events are already the record of what the driver did, and a second table would be a second source
+Pause intervals on historical trips are reconstructed from the tracking-event log rather than a
+separate table — the events are already the record, and a second table would be a second source
 of truth to keep in sync.
+
+### Fuel
+
+An **estimate** and an **actual** are different numbers with different trust levels, and the
+distinction is enforced in `estimateFuel` versus `calculateFuelTotal`.
+
+The estimate needs two inputs and produces nothing without them: the vehicle's
+`averageConsumption` gives litres, and the organization's `fuelPricePerLiter`
+(`PATCH /admin/settings`) turns litres into money. Missing either yields `null` rather than a
+zero — an absence and a claim of "free" are not the same thing, and a national average rendered
+as this customer's cost would be an invented number wearing a currency symbol.
+
+The unit price keeps its own precision until the multiplication is finished. A pump price has
+three decimals and the settings column stores four; rounding it to the euro's two before
+multiplying is rounding the wrong number, and the error scales with every litre.
 
 Database guarantees: one active trip per driver, one per vehicle, both partial unique indexes.
 

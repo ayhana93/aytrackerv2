@@ -31,7 +31,7 @@ Then open:
 
 ### Demo credentials
 
-Printed by the seed. By default:
+`pnpm setup` seeds a demo organization and prints its credentials. By default:
 
 ```
 Admin    admin@demo-factory.example / demo-password-2026!
@@ -40,7 +40,12 @@ Driver   driver D001 / PIN 571364     (organization: demo-factory)
 ```
 
 Override with `SEED_ADMIN_PASSWORD`, `SEED_WORKER_PIN`, `SEED_DRIVER_PIN`.
-`SEED_DEMO=false` seeds only platform reference data — what production runs.
+
+**`pnpm db:seed` on its own seeds only platform reference data** — markets, plans, features,
+system roles — which is exactly what production runs. The demo factory, with its workers,
+positions and vans, is created only when `SEED_DEMO=true` is set, and `pnpm setup` is the one
+place that sets it. Anything else would mean a customer who has entered no vehicles finding
+three of them in their account.
 
 Worker 1001 (Иван) is linked to driver D001, so the worker portal shows the **Шофьор** position:
 selecting it offers a vehicle and hands off to the driver portal with a trip recording. See
@@ -142,13 +147,28 @@ Start with [docs/architecture.md](docs/architecture.md).
 
 ## Status
 
-Runs end to end: worker and driver portals, admin dashboard, fleet and white-label settings, on a
+Runs end to end: worker and driver portals, admin dashboard, fleet, settings and white-label, on a
 Fastify API and a PostgreSQL schema whose invariants are enforced by the database rather than by
 convention.
 
 Built: architecture, monorepo, database with its invariants, auth and multi-tenancy, markets and
 pricing, entitlements, the core manufacturing domain, worker and driver portal APIs, GPS
 integrity, audit, the design system in light and dark, and the worker → driver handoff.
+
+**Both portals talk to the API.** They shipped once as walkable mockups — a hardcoded roster, an
+invented fleet, and a shift timer anchored to `Date.now() - 2h35m` so the screen had something to
+show. Nothing they displayed reached the database, so an admin watching the dashboard saw an empty
+factory while somebody stood in front of a screen that said they were working. Every value on both
+screens now comes from a request, and every elapsed time is measured against `serverTime` rather
+than the device's clock.
+
+**A driver cannot pause a running trip.** There is no button, no endpoint and no permission. It
+was the one control that let the vehicle keep moving with the recording switched off — a hundred
+kilometres of fuel against no trip, and a straight line drawn through the middle of the route.
+Standing still needs no button: a stationary vehicle shows up as a stop on its own track.
+
+**Routes are optional.** A driver who has to leave now presses one button. A run worth naming gets
+a name and, if anyone knows it, a planned distance — and is then measured against it.
 
 ### One thing worth knowing before you promise it
 

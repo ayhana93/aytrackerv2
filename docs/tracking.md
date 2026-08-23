@@ -3,26 +3,42 @@
 Location data is sensitive operational data about identifiable people. Everything in this
 document follows from taking that seriously.
 
+This document is the **arithmetic**: sampling, distance, states, gaps, retention.
+**[`docs/workforce-tracking.md`](./workforce-tracking.md)** is the **engine** that owns it — who
+may report, what owns the points, and why a working day and a driver trip are one stream rather
+than two. Read that one first if you are trying to understand the shape.
+
 ---
 
 ## 1. Pipeline
 
 ```
-Driver PWA
-   │  adaptive sampling (device-side)
+Worker or driver device       (web collector, or apps/mobile for background)
+   │  adaptive sampling (device-side, floor set by the server)
    ▼
-POST /api/v1/driver/location          rate limited, entitlement-gated
+POST /api/v1/tracking/points          rate limited, entitlement-gated
    │
-   ├─ validateLocationBatch           trip ACTIVE? coordinates valid? timestamps in window?
+   ├─ resolveSession                  the OPEN session for this actor — never named by the client
+   ├─ admitPoints                     session open? coordinates valid? timestamp inside the window?
+   │                                  which trip was running at that instant?
+   ├─ sampling floor                  thin anything faster than the configured minimum
    ├─ appendMany                      createMany, one round trip
    ├─ computeTrackDistance            recomputed from all stored points
    ├─ deriveTrackingState             from observable facts only
+   ├─ detectGeofenceVisits            recomputed; only new crossings produce events
+   ├─ detectSpeedAlerts               one event per stretch, never per sample
    └─ record a TrackingEvent          only on a state transition
    ▼
 PostgreSQL
    ▼
-Admin map / trip history / cost reports
+Admin live map / workforce counts / work route history / trip history / cost reports
 ```
+
+There is exactly one ingestion endpoint for the whole product. A worker's phone on shift and a
+driver's phone on a trip post the same body to the same URL; the server decides which session owns
+the points and whether a trip was running when each fix was taken. Two endpoints would have meant
+two sets of admission rules, and the day they disagree is the day a payroll figure and a fuel
+figure stop adding up.
 
 ---
 
@@ -47,13 +63,18 @@ DEFAULT_SAMPLING_POLICY = {
 };
 ```
 
-The server sends the policy to the device (`GET /driver/state`), so it can be tuned per
+The server sends the policy to the device (`GET /tracking/state`), so it can be tuned per
 organization without shipping a new client.
 
-**The server treats it as a floor, not a promise.** `admitPoints` independently drops points
-arriving faster than the configured minimum. An over-eager or hostile client gains nothing, and
-does not get its whole batch rejected either — dropping is quieter than failing and protects the
-driver's legitimate data.
+**The server treats it as a floor, not a promise.** Ingestion independently thins points arriving
+faster than the configured minimum. An over-eager or hostile client gains nothing, and does not get
+its whole batch rejected either — thinning is quieter than failing and protects the employee's
+legitimate data.
+
+The floor is applied in two buckets: points newer than the last one stored are thinned against it;
+points at or before it are an offline replay and are thinned only against each other. Measuring a
+two-hour-old queued fix against the newest stored point would discard the whole replay, which is
+real data about a stretch of the day there is otherwise no evidence for.
 
 ---
 
@@ -87,11 +108,25 @@ synced out of order still ends with the right number.
 ```
 ACTIVE       fresh, accurate points arriving on schedule
 DEGRADED     still arriving, but late or low-accuracy
-PAUSED       the driver paused the trip — not an anomaly
+PAUSED       a historical state; no driver can produce it any more — see below
 INTERRUPTED  nothing received past the stale threshold, trip still open
 OFFLINE      the device told us it lost connectivity
 STOPPED      no active tracking session
 ```
+
+### Nothing a driver can press produces PAUSED
+
+There is no pause control and no `driver.trip.pause` permission. A trip records from the moment
+it starts until the driver ends it.
+
+Pausing was the one control that let the vehicle keep moving while the record stopped: press
+pause, drive a hundred kilometres, press resume, and the fuel burned in that window belongs to
+nobody while the route shows a straight line across the middle. Standing still needs no button —
+a stationary vehicle produces a stop on its own track, detected server-side from the points.
+
+The state and the arithmetic that excludes pause intervals both remain, because trips recorded
+before this was removed still carry `TRACKING_PAUSED` events, and their totals must stay what
+they always were.
 
 ### The anti-tampering rule
 
@@ -112,8 +147,8 @@ similar from the server. So the model reports what is observable and leaves inte
 None of these accuses anyone. There is no `DRIVER_DISABLED_TRACKING` event, and there is no state
 that asserts intent — a test asserts the state union to keep it that way.
 
-Derivation order matters: a `PAUSED` trip is never called interrupted (the driver told us they
-stopped), and an explicit device report beats an inference from silence.
+Derivation order matters: a `PAUSED` trip — only ever a historical one now — is never called
+interrupted, and an explicit device report beats an inference from silence.
 
 ---
 
@@ -133,7 +168,8 @@ Rules:
   `reconstruct()` returns `gapAfterIndices` so the renderer breaks the line.
 - **Distance is not interpolated across a gap.** The segment is excluded and the time is reported
   as `untrackedSeconds` on the trip.
-- **Driver-initiated pauses are not gaps.** Pause intervals are excluded.
+- **Pause intervals on historical trips are not gaps.** They are excluded, so a trip recorded
+  before pausing was removed keeps the totals it always had.
 - **Silence before the trip ends is a gap.** A phone that died 10 minutes before arrival leaves
   10 minutes we cannot account for, and saying so is the point.
 
@@ -148,31 +184,34 @@ when nothing is arriving.
 
 ## 6. Consent and visibility
 
-**The driver always knows when tracking is active.**
+**The person being tracked always knows when tracking is active.** The portal shows it for the
+whole time it is running, and on Android the platform's own persistent notification says the same
+thing independently — a promise is worth more when the operating system enforces it too.
 
-```
-🔴 LOCATION TRACKING ACTIVE
-   Trip: Sofia → Plovdiv
-   Tracking started: 08:42
-```
-
-- Location is collected **only** during an `ACTIVE` trip. `validateLocationBatch` refuses points
-  for a planned, paused, completed or cancelled trip — enforced at ingestion, not left to the
-  client to honour.
-- Starting and stopping tracking are driver actions.
-- Pausing stops collection.
-- Nothing is collected outside a trip. There is no background mode.
+- Location is collected **only** while a tracking session is open, and a session exists only while
+  a shift or a trip does. This is a `NOT NULL` foreign key, not a rule somebody remembers: there is
+  no row the schema can hold that represents location collected outside authorised working time.
+  See [`docs/workforce-tracking.md` §2](./workforce-tracking.md).
+- `POST /tracking/points` with no open session returns `403 tracking.no_open_session` — refused
+  rather than silently discarded, so the device stops draining its battery into a void.
+- Clocking in starts it; clocking out ends it. Ending a trip does **not** end it, because the
+  employee is still at work — but ending the shift does, and the next batch is refused.
+- There is no pause. See §4.2: a driver who could pause and then cover a hundred kilometres would
+  make the fuel figure meaningless.
+- The background mode in `apps/mobile` exists so recording survives the screen locking. It runs
+  only inside a session, has no boot receiver and no idle service, and discards simulated fixes.
 
 ---
 
 ## 7. Privacy and retention
 
-| Data            | Default retention | Rationale                                       |
-| --------------- | ----------------- | ----------------------------------------------- |
-| Raw GPS points  | 180 days          | Sensitive; the operational value decays quickly |
-| Trip summaries  | 5 years           | Cost and payroll reporting                      |
-| Tracking events | With the trip     | The record of what happened                     |
-| Audit records   | 7 years           | Legal                                           |
+| Data                       | Default retention | Rationale                                       |
+| -------------------------- | ----------------- | ----------------------------------------------- |
+| Raw GPS points             | 180 days          | Sensitive; the operational value decays quickly |
+| Session and trip summaries | 5 years           | Cost and payroll reporting                      |
+| Tracking events            | With the session  | The record of what happened                     |
+| Geofence visits            | With the session  | Arrival times feed customer reports             |
+| Audit records              | 7 years           | Legal                                           |
 
 Both windows are per-organization settings. Deleting raw points does **not** invalidate a
 year-old cost report, because the summary carries distance, duration and gaps. That separation is
@@ -181,9 +220,14 @@ the whole reason the windows differ.
 Coordinates are stored at 6 decimal places (~0.11 m). More precision than the sensor provides is
 a privacy cost with no operational benefit.
 
-Access is permission-gated: `fleet.tracking.read` for live locations and route history. A driver
-sees only their own trips — enforced by the query filter, so another driver's trip is not found
-rather than forbidden.
+Access is permission-gated: `fleet.tracking.read` for live locations, route history and geofence
+visits; `workers.read` for the workforce counts. A driver sees only their own trips — enforced by
+the query filter, so another driver's trip is not found rather than forbidden.
+
+A geofence visit is a customer address paired with somebody's whereabouts, which makes it exactly
+the kind of row that must not leak across a tenant boundary because of one forgotten `WHERE`
+clause. Both `geofences` and `geofence_visits` carry composite tenant foreign keys and an RLS
+policy, checked by `tests/integration/schema-invariants.test.ts`.
 
 ---
 
@@ -230,7 +274,7 @@ because premature partitioning costs planning complexity for no current benefit.
 
 ## 10. Tests
 
-`tests/unit/tracking.test.ts` (38):
+`tests/unit/tracking.test.ts` — the arithmetic:
 
 ```
 Haversine against a known distance
@@ -242,5 +286,36 @@ Every tracking-state derivation, including PAUSED never reading as INTERRUPTED
 Gap detection, including trailing silence and pause exclusion
 Fuel: the spec's worked example, mpg conversion, brim-to-brim consumption, cost per km
 Sampling decisions: first point, interval floor, distance threshold, low battery, stationary
-Server-side admission control drops over-frequent points
+The sampling floor thins over-frequent points
 ```
+
+`tests/unit/tracking-admission.test.ts` — what a device is allowed to add to the record:
+
+```
+No session, no collection; a closed session refuses too
+A fix from yesterday is rejected, not dragged onto the session start
+A fix from the future is rejected, not dragged onto now
+Drift small enough to be a clock artefact is corrected
+A queued offline replay from inside the window is kept, and marked as backfill
+Malformed coordinates and negative accuracy are dropped
+The trip overlay is decided from the timestamp, splitting a batch across a trip's end
+```
+
+`tests/unit/geofence-and-speed.test.ts` — restraint:
+
+```
+One visit for an arrival, a stay and a departure
+No flapping when a device sits on the boundary
+No visit invented from driving past
+Fixes too inaccurate to place inside the fence conclude nothing
+An open visit stays open rather than getting an invented exit
+One alert per speeding stretch, placed where the worst of it happened
+Nothing at all when no limit is configured
+No second alert inside the cooldown, and one again once it passes
+Device speed preferred; a derived figure is labelled as such
+```
+
+`tests/integration/api-security.test.ts` — the engine end to end: the session opens with the
+shift and refuses points before it, one session survives a trip starting inside it, tracking
+continues after the trip ends, everything is refused after the shift ends, one stay produces one
+visit however many batches it took, and speed alerting says nothing until a limit is set.

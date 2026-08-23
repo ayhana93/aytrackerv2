@@ -72,7 +72,7 @@ worker.history.read
 drivers.read     drivers.manage
 
 driver.portal.access   driver.trip.start    driver.trip.pause    driver.trip.stop
-driver.location.submit driver.trip.history  driver.vehicle.view
+driver.trip.history  driver.vehicle.view  tracking.submit
 
 fleet.read       fleet.create       fleet.update       fleet.delete
 fleet.assign     fleet.tracking.read

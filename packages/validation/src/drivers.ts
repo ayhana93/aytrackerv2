@@ -16,19 +16,39 @@ import {
  * hold, however the request is constructed.
  */
 
-export const startTripSchema = z.object({
-  clientActionId: clientActionIdSchema,
-  label: z.string().trim().max(160).nullable().default(null),
-  startLatitude: latitudeSchema.nullable().default(null),
-  startLongitude: longitudeSchema.nullable().default(null),
-  startOdometer: nonNegativeDecimalStringSchema.nullable().default(null),
-  occurredAt: isoDateTimeSchema.optional(),
-});
-
-export const tripActionSchema = z.object({
-  clientActionId: clientActionIdSchema,
-  occurredAt: isoDateTimeSchema.optional(),
-});
+/**
+ * Starting a trip.
+ *
+ * `label` and `plannedDistanceKm` are the route, and both are optional. A driver who has to
+ * leave now presses one button; a dispatcher who knows the run declares it and the trip is then
+ * measured against what was planned. Neither is a precondition for recording.
+ *
+ * The planned distance is refused without a label, because a number with no route attached is
+ * a figure nobody can check later.
+ */
+export const startTripSchema = z
+  .object({
+    clientActionId: clientActionIdSchema,
+    label: z.string().trim().max(160).nullable().default(null),
+    /** Kilometres, as typed. Converted to metres by the route — the domain stores metres. */
+    plannedDistanceKm: z.number().positive().max(20_000).nullable().default(null),
+    /**
+     * The vehicle the driver picked.
+     *
+     * Only consulted when the driver holds no assignment. It is a choice from a list the server
+     * produced, not an instruction: a vehicle the driver may not take is refused here exactly as
+     * it would be if they had never been shown it.
+     */
+    vehicleId: uuidSchema.nullable().default(null),
+    startLatitude: latitudeSchema.nullable().default(null),
+    startLongitude: longitudeSchema.nullable().default(null),
+    startOdometer: nonNegativeDecimalStringSchema.nullable().default(null),
+    occurredAt: isoDateTimeSchema.optional(),
+  })
+  .refine((value) => value.plannedDistanceKm === null || Boolean(value.label), {
+    message: 'A planned distance needs a route to belong to',
+    path: ['plannedDistanceKm'],
+  });
 
 export const endTripSchema = z.object({
   clientActionId: clientActionIdSchema,
@@ -65,13 +85,34 @@ export const locationPointSchema = z.object({
  * never as proof of intent — "permission not granted" is a fact about the device, not an
  * accusation about the driver.
  */
-export const submitLocationsSchema = z.object({
+/**
+ * A batch from a device, for either context.
+ *
+ * There is no session id and no trip id: the server resolves both from the authenticated actor
+ * and from each point's timestamp. A client naming its own session would be a client choosing
+ * where its data lands.
+ *
+ * The telemetry fields are here because they change what the system does — battery decides the
+ * sampling interval, and a reported permission state explains silence that would otherwise look
+ * like a driver hiding. Nothing is collected merely because a phone exposes it.
+ */
+export const submitTrackingPointsSchema = z.object({
   clientActionId: clientActionIdSchema,
-  tripId: uuidSchema,
   points: z.array(locationPointSchema).min(1).max(500),
   deviceReported: z.enum(['ONLINE', 'OFFLINE', 'PERMISSION_DENIED']).nullable().default(null),
   batteryLevel: z.number().min(0).max(1).nullable().default(null),
+  isCharging: z.boolean().nullable().default(null),
+  permission: z.enum(['granted', 'denied', 'prompt', 'unknown']).nullable().default(null),
 });
 
+export type SubmitTrackingPointsRequest = z.infer<typeof submitTrackingPointsSchema>;
+
+/*
+ * There is no trip-scoped submission shape any more.
+ *
+ * A body carrying a `tripId` invited the client to say which trip its points belonged to, and the
+ * server has never accepted that answer — the trip is decided per point from the timestamp. The
+ * field's only remaining effect was to make a second ingestion route look reasonable.
+ */
+
 export type StartTripRequest = z.infer<typeof startTripSchema>;
-export type SubmitLocationsRequest = z.infer<typeof submitLocationsSchema>;

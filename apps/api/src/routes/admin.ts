@@ -11,12 +11,15 @@ import {
 } from '@aytracker/tracking';
 import type { OrganizationId } from '@aytracker/types';
 import {
+  createGeofenceSchema,
   createPositionSchema,
   createVehicleSchema,
   createWorkAreaSchema,
   createWorkerSchema,
   selectLogoSchema,
+  updateGeofenceSchema,
   updateMemberEmailSchema,
+  updateOperationalSettingsSchema,
   updateOrganizationProfileSchema,
   updatePositionSchema,
   updateWorkAreaSchema,
@@ -54,6 +57,74 @@ const MAX_RANGE_DAYS = 92;
 const MIN_STOP_SECONDS = 20 * 60;
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The operational settings, in one place.
+ *
+ * Named rather than repeated at each of the three sites that need them (the read, the write, and
+ * the write's response), because the failure mode of repeating them is a field that saves and
+ * then does not come back — which reads to the user as "it didn't save".
+ */
+const SETTINGS_FIELDS = {
+  fuelPricePerLiter: true,
+  allowWorkerSelfShiftStart: true,
+  maxShiftDurationMinutes: true,
+  gpsMinIntervalSeconds: true,
+  gpsMinDistanceMeters: true,
+  speedLimitKph: true,
+  speedSustainedSeconds: true,
+  speedCooldownSeconds: true,
+  geofenceExitHysteresisMeters: true,
+  geofenceDebounceSeconds: true,
+} as const;
+
+type SettingsRow = {
+  fuelPricePerLiter: { toString(): string } | null;
+  allowWorkerSelfShiftStart: boolean;
+  maxShiftDurationMinutes: number;
+  gpsMinIntervalSeconds: number;
+  gpsMinDistanceMeters: number;
+  speedLimitKph: number | null;
+  speedSustainedSeconds: number;
+  speedCooldownSeconds: number;
+  geofenceExitHysteresisMeters: number;
+  geofenceDebounceSeconds: number;
+};
+
+function presentSettings(
+  settings: SettingsRow | null,
+  organization: { defaultCurrency: string; defaultTimezone: string } | null,
+) {
+  return {
+    // A Decimal reaching JSON renders as an object; a price has to travel as a string.
+    fuelPricePerLiter: settings?.fuelPricePerLiter?.toString() ?? null,
+    currency: organization?.defaultCurrency ?? 'EUR',
+    timezone: organization?.defaultTimezone ?? 'Europe/Sofia',
+    allowWorkerSelfShiftStart: settings?.allowWorkerSelfShiftStart ?? true,
+    maxShiftDurationMinutes: settings?.maxShiftDurationMinutes ?? 960,
+    gpsMinIntervalSeconds: settings?.gpsMinIntervalSeconds ?? 15,
+    gpsMinDistanceMeters: settings?.gpsMinDistanceMeters ?? 50,
+    /** Null means no speed alerting. It is not a placeholder for a default limit. */
+    speedLimitKph: settings?.speedLimitKph ?? null,
+    speedSustainedSeconds: settings?.speedSustainedSeconds ?? 30,
+    speedCooldownSeconds: settings?.speedCooldownSeconds ?? 600,
+    geofenceExitHysteresisMeters: settings?.geofenceExitHysteresisMeters ?? 40,
+    geofenceDebounceSeconds: settings?.geofenceDebounceSeconds ?? 90,
+  };
+}
+
+/**
+ * The keys the caller actually sent.
+ *
+ * `undefined` means "not mentioned" and is dropped; `null` means "clear this" and is kept. Zod
+ * has already decided which fields may be null, so the distinction survives all the way to the
+ * update rather than being flattened by a spread.
+ */
+function definedOnly<T extends Record<string, unknown>>(body: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+}
 
 function resolveRange(
   query: { from?: string; to?: string },
@@ -780,7 +851,8 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         });
         if (!trip) throw new NotFoundError('trip.not_found', 'Trip not found.');
 
-        const rows = await services.prisma.tripLocationPoint.findMany({
+        // The trip's own points, read through the trip overlay on the shared table.
+        const rows = await services.prisma.locationPoint.findMany({
           where: { organizationId: actor.organizationId, tripId: trip.id },
           select: {
             timestamp: true,
@@ -1568,6 +1640,602 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         member: { id: member.id, email: body.email },
         /** True when the caller just signed themselves out. The screen has to act on it. */
         signedOut: member.user.id === actor.userId,
+      };
+    });
+
+    /* ------------------------------------------------------------------- live */
+
+    /**
+     * The workforce, counted.
+     *
+     * "How many people work here, how many are working right now, how many are on break" — the
+     * question a manager asks before any other, and the one that needs no map to answer.
+     *
+     * Counted in the database rather than by summing a page of rows in the browser. The lists on
+     * these screens are capped; a client adding up what it happened to receive would quietly
+     * report a smaller workforce the moment an organization outgrew the cap, and it is the sort
+     * of wrong number nobody notices because it looks plausible.
+     *
+     * `notReporting` deserves its own line rather than being folded into "working". Someone whose
+     * phone has gone quiet is still at work — the honest statement is that we cannot currently see
+     * where, and hiding that inside a green count is how a tracking product starts lying.
+     */
+    app.get('/workforce', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.WORKERS_READ);
+      const organizationId = actor.organizationId;
+      const now = services.clock.now();
+
+      const [employed, shifts, sessions] = await Promise.all([
+        services.prisma.worker.count({ where: { organizationId, status: 'ACTIVE' } }),
+        services.prisma.shift.groupBy({
+          by: ['status'],
+          where: { organizationId, status: { in: ['ACTIVE', 'ON_BREAK'] } },
+          _count: { _all: true },
+        }),
+        services.prisma.trackingSession.findMany({
+          where: { organizationId, endedAt: null },
+          select: { context: true, trackingState: true, tripId: true, workerId: true },
+          take: 1000,
+        }),
+      ]);
+
+      const byStatus = new Map(shifts.map((row) => [row.status, row._count._all]));
+      const onShift = byStatus.get('ACTIVE') ?? 0;
+      const onBreak = byStatus.get('ON_BREAK') ?? 0;
+
+      const driving = await services.prisma.driverTrip.count({
+        where: { organizationId, endedAt: null, startedAt: { not: null } },
+      });
+
+      /** Reporting means a fix arrived recently enough to be current. The rest are silent. */
+      const reporting = sessions.filter(
+        (session) => session.trackingState === 'ACTIVE' || session.trackingState === 'DEGRADED',
+      ).length;
+
+      return {
+        serverTime: now.toISOString(),
+        counts: {
+          /** Everyone on the books. */
+          employed,
+          /** Clocked in and not on a break. */
+          working: onShift,
+          onBreak,
+          /** Of those at work, how many are out in a vehicle. */
+          driving,
+          /** Sessions open and currently sending. */
+          reporting,
+          /**
+           * Open sessions that have gone quiet. Not an accusation: a tunnel, a flat battery and
+           * a force-quit are the same thing from here.
+           */
+          notReporting: sessions.length - reporting,
+          /** At work with no tracking session at all — a shift started on a device that has none. */
+          untracked: Math.max(0, onShift + onBreak - sessions.length),
+        },
+      };
+    });
+
+    /**
+     * Everyone and everything currently being tracked, in one query.
+     *
+     * The live map's only read. It goes to `tracking_sessions` rather than assembling employees
+     * and vehicles separately, because a session is already the answer to "who is reporting right
+     * now" — one indexed row per marker, carrying the last fix and the derived state.
+     *
+     * Every figure here is the server's. The browser places markers; it never computes a
+     * distance, a speed or a staleness.
+     */
+    app.get('/live', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
+      const now = services.clock.now();
+
+      const sessions = await services.prisma.trackingSession.findMany({
+        where: { organizationId: actor.organizationId, endedAt: null },
+        select: {
+          id: true,
+          context: true,
+          startedAt: true,
+          distanceMeters: true,
+          trackingState: true,
+          lastPointAt: true,
+          lastLatitude: true,
+          lastLongitude: true,
+          lastSpeedMps: true,
+          lastAccuracyMeters: true,
+          batteryLevel: true,
+          devicePermission: true,
+          worker: { select: { id: true, firstName: true, lastName: true, employeeNumber: true } },
+          driver: { select: { id: true, driverCode: true } },
+          vehicle: { select: { id: true, registrationNumber: true, make: true, model: true } },
+          shift: {
+            select: {
+              status: true,
+              positionSessions: {
+                where: { endedAt: null },
+                select: { position: { select: { name: true } } },
+                take: 1,
+              },
+            },
+          },
+          trip: {
+            select: {
+              id: true,
+              label: true,
+              startedAt: true,
+              distanceMeters: true,
+              vehicle: { select: { registrationNumber: true, make: true, model: true } },
+            },
+          },
+        },
+        orderBy: { startedAt: 'asc' },
+        take: 500,
+      });
+
+      /**
+       * A worker who is driving produces one session, not two.
+       *
+       * The trip is folded into the same row, so the map shows one marker for one person and can
+       * label it with the vehicle they are in. Two markers for one phone would be the clearest
+       * possible symptom of the duplicate pipeline this design avoids.
+       *
+       * `session.trip` only exists on a DRIVER_TRIP session — the trip is the reason that session
+       * was opened. A WORK session never points at a trip, because the trip is an overlay on the
+       * day rather than the thing being tracked. So for the common case — an employee who clocked
+       * in and later took a van — the running trip has to be looked up by subject, not read off
+       * the session. Without this the map shows the person and not the vehicle, on exactly the
+       * screen that exists to answer "who has which van, and where is it".
+       */
+      const workerIds = sessions.flatMap((session) => (session.worker ? [session.worker.id] : []));
+      const runningTrips = workerIds.length
+        ? await services.prisma.driverTrip.findMany({
+            where: {
+              organizationId: actor.organizationId,
+              endedAt: null,
+              startedAt: { not: null },
+              driver: { workerId: { in: workerIds } },
+            },
+            select: {
+              id: true,
+              label: true,
+              startedAt: true,
+              distanceMeters: true,
+              driver: { select: { workerId: true } },
+              vehicle: { select: { registrationNumber: true, make: true, model: true } },
+            },
+          })
+        : [];
+      const tripByWorker = new Map(
+        runningTrips.flatMap((trip) =>
+          trip.driver.workerId ? [[trip.driver.workerId, trip]] : [],
+        ),
+      );
+
+      return {
+        serverTime: now.toISOString(),
+        subjects: sessions.map((session) => {
+          const trip =
+            session.trip ?? (session.worker ? (tripByWorker.get(session.worker.id) ?? null) : null);
+          const vehicle = trip?.vehicle ?? session.vehicle ?? null;
+          const secondsSinceFix = session.lastPointAt
+            ? Math.max(0, Math.round((now.getTime() - session.lastPointAt.getTime()) / 1000))
+            : null;
+
+          return {
+            id: session.id,
+            context: session.context,
+            name: session.worker
+              ? `${session.worker.firstName} ${session.worker.lastName}`
+              : (session.driver?.driverCode ?? 'Шофьор'),
+            employeeNumber: session.worker?.employeeNumber ?? null,
+            /** Where they are standing, when they are not in a vehicle. */
+            position: session.shift?.positionSessions[0]?.position.name ?? null,
+            onBreak: session.shift?.status === 'ON_BREAK',
+            startedAt: session.startedAt.toISOString(),
+            distanceMeters: session.distanceMeters,
+            /**
+             * The state as the server observes it, never as an accusation. A silent phone is
+             * INTERRUPTED — which covers a tunnel, a flat battery and a force-quit equally,
+             * because from here they are the same thing.
+             */
+            trackingState: session.trackingState,
+            lastPointAt: session.lastPointAt?.toISOString() ?? null,
+            secondsSinceFix,
+            latitude: session.lastLatitude === null ? null : Number(session.lastLatitude),
+            longitude: session.lastLongitude === null ? null : Number(session.lastLongitude),
+            speedKph:
+              session.lastSpeedMps === null ? null : Math.round(Number(session.lastSpeedMps) * 3.6),
+            accuracyMeters:
+              session.lastAccuracyMeters === null ? null : Number(session.lastAccuracyMeters),
+            batteryLevel: session.batteryLevel === null ? null : Number(session.batteryLevel),
+            devicePermission: session.devicePermission,
+            vehicle: vehicle
+              ? {
+                  registrationNumber: vehicle.registrationNumber,
+                  make: vehicle.make,
+                  model: vehicle.model,
+                }
+              : null,
+            trip: trip
+              ? {
+                  id: trip.id,
+                  label: trip.label,
+                  startedAt: trip.startedAt?.toISOString() ?? null,
+                  distanceMeters: trip.distanceMeters,
+                }
+              : null,
+            /**
+             * Whether the position on the map is the *vehicle's* or merely the phone's.
+             *
+             * A phone in a driver's pocket is not the van. Saying which is which is the
+             * difference between a fact and an assumption somebody will act on.
+             */
+            positionSource: 'DEVICE' as const,
+          };
+        }),
+      };
+    });
+
+    /**
+     * One employee's working day, on a map.
+     *
+     * The working route and the trips inside it, from one stream of points. `tripId` on each
+     * point is what separates the segments — so a day reads as WORK → DRIVER_TRIP → WORK without
+     * anything being recorded twice.
+     *
+     * Gaps are returned explicitly and the renderer breaks the line at them. There is no version
+     * of this data where a straight line is drawn across nineteen minutes nobody can account for.
+     */
+    app.get('/live/:sessionId/track', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
+      const { sessionId } = request.params as { sessionId: string };
+      const now = services.clock.now();
+
+      const session = await services.prisma.trackingSession.findFirst({
+        where: { id: sessionId, organizationId: actor.organizationId },
+        select: {
+          id: true,
+          context: true,
+          startedAt: true,
+          endedAt: true,
+          distanceMeters: true,
+          untrackedSeconds: true,
+          worker: { select: { firstName: true, lastName: true } },
+        },
+      });
+      if (!session) {
+        throw new NotFoundError('tracking.session_not_found', 'Tracking session not found.');
+      }
+
+      const rows = await services.prisma.locationPoint.findMany({
+        where: { organizationId: actor.organizationId, trackingSessionId: session.id },
+        select: {
+          timestamp: true,
+          latitude: true,
+          longitude: true,
+          accuracyMeters: true,
+          speedMps: true,
+          tripId: true,
+        },
+        orderBy: { timestamp: 'asc' },
+      });
+
+      const points = rows.map((row) => ({
+        timestamp: row.timestamp,
+        latitude: Number(row.latitude),
+        longitude: Number(row.longitude),
+        accuracyMeters: row.accuracyMeters === null ? null : Number(row.accuracyMeters),
+        speedMps: row.speedMps === null ? null : Number(row.speedMps),
+        tripId: row.tripId,
+      }));
+
+      const track = await new HaversineRoutingProvider().reconstruct(points);
+      const gaps = findTrackingGaps({
+        pointTimestamps: points.map((point) => point.timestamp),
+        tripStartedAt: session.startedAt,
+        tripEndedAt: session.endedAt,
+        now,
+      });
+      const stops = detectStops(points, {
+        ...DEFAULT_STOP_OPTIONS,
+        minDurationSeconds: MIN_STOP_SECONDS,
+      });
+
+      /**
+       * The day, split into the segments a person would describe it in.
+       *
+       * Consecutive points sharing a trip id are one DRIVER_TRIP segment; the rest is WORK. This
+       * is derived rather than stored, because the points already say it and a second
+       * representation would be a second thing to keep true.
+       */
+      const segments: {
+        context: 'WORK' | 'DRIVER_TRIP';
+        tripId: string | null;
+        from: string;
+        to: string;
+        pointCount: number;
+      }[] = [];
+      for (const point of points) {
+        const last = segments.at(-1);
+        if (last && last.tripId === point.tripId) {
+          last.to = point.timestamp.toISOString();
+          last.pointCount += 1;
+          continue;
+        }
+        segments.push({
+          context: point.tripId ? 'DRIVER_TRIP' : 'WORK',
+          tripId: point.tripId,
+          from: point.timestamp.toISOString(),
+          to: point.timestamp.toISOString(),
+          pointCount: 1,
+        });
+      }
+
+      return {
+        session: {
+          id: session.id,
+          context: session.context,
+          worker: session.worker ? `${session.worker.firstName} ${session.worker.lastName}` : null,
+          startedAt: session.startedAt.toISOString(),
+          endedAt: session.endedAt?.toISOString() ?? null,
+          distanceMeters: session.distanceMeters,
+          untrackedSeconds: session.untrackedSeconds,
+        },
+        track: {
+          points: track.points.map((point) => ({
+            latitude: point.latitude,
+            longitude: point.longitude,
+          })),
+          distanceMeters: track.distanceMeters,
+          /** Draw a break after each of these indices. Never a straight line across. */
+          gapAfterIndices: track.gapAfterIndices,
+          pointCount: track.points.length,
+        },
+        segments,
+        stops: stops.map((stop) => ({
+          latitude: stop.center.latitude,
+          longitude: stop.center.longitude,
+          startedAt: stop.startedAt.toISOString(),
+          endedAt: stop.endedAt.toISOString(),
+          seconds: stop.durationSeconds,
+        })),
+        gaps: gaps.map((gap) => ({
+          startedAt: gap.startedAt.toISOString(),
+          endedAt: gap.endedAt?.toISOString() ?? null,
+          seconds: gap.seconds,
+          isOpen: gap.endedAt === null,
+        })),
+      };
+    });
+
+    /* --------------------------------------------------------------- settings */
+
+    /**
+     * The settings that decide how the product behaves for this organization.
+     *
+     * The fuel price is the one that matters most and the one that had nowhere to live: without
+     * it the driver's screen and every cost report can compute litres and nothing else. A
+     * hardcoded national average would have been worse than an empty field — it produces a
+     * number that looks authoritative and is invented.
+     */
+    app.get('/settings', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_READ);
+
+      const [settings, organization] = await Promise.all([
+        services.prisma.organizationSettings.findUnique({
+          where: { organizationId: actor.organizationId },
+          select: SETTINGS_FIELDS,
+        }),
+        services.prisma.organization.findUnique({
+          where: { id: actor.organizationId },
+          select: { defaultCurrency: true, defaultTimezone: true },
+        }),
+      ]);
+
+      return presentSettings(settings, organization);
+    });
+
+    app.patch('/settings', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_UPDATE);
+      const body = updateOperationalSettingsSchema.parse(request.body);
+
+      /**
+       * Only what the request carried.
+       *
+       * A patch that omits a field must not reset it to a default the caller never mentioned —
+       * and `speedLimitKph` makes that more than a nicety: it is explicitly nullable, so
+       * "absent" and "set to null" mean different things. Absent leaves the limit alone; null
+       * turns speed alerting off.
+       */
+      const changes = definedOnly(body);
+
+      /*
+       * Upserted, because a settings row may not exist yet. Registration creates one, but an
+       * organization seeded or imported before it did would otherwise fail here with a
+       * record-not-found on the first save — which reads as "settings are broken" rather than
+       * "there was nothing to update".
+       */
+      const settings = await services.prisma.organizationSettings.upsert({
+        where: { organizationId: actor.organizationId },
+        create: { organizationId: actor.organizationId, ...changes },
+        update: changes,
+        select: SETTINGS_FIELDS,
+      });
+
+      const organization = await services.prisma.organization.findUnique({
+        where: { id: actor.organizationId },
+        select: { defaultCurrency: true, defaultTimezone: true },
+      });
+
+      return presentSettings(settings, organization);
+    });
+
+    /**
+     * Geofences: the places this organization cares about arriving at.
+     *
+     * Managed here rather than derived from sites, because most of them are customers rather
+     * than premises — and a dispatcher adding "the new warehouse on the ring road" should not
+     * have to create a site, a work area and a position to do it.
+     */
+    app.get('/geofences', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_READ);
+
+      const fences = await services.prisma.geofence.findMany({
+        where: { organizationId: actor.organizationId },
+        select: {
+          id: true,
+          name: true,
+          kind: true,
+          centerLatitude: true,
+          centerLongitude: true,
+          radiusMeters: true,
+          isActive: true,
+          notes: true,
+          site: { select: { id: true, name: true } },
+          _count: { select: { visits: true } },
+        },
+        orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+        take: 500,
+      });
+
+      return {
+        geofences: fences.map((fence) => ({
+          id: fence.id,
+          name: fence.name,
+          kind: fence.kind,
+          latitude: Number(fence.centerLatitude),
+          longitude: Number(fence.centerLongitude),
+          radiusMeters: fence.radiusMeters,
+          isActive: fence.isActive,
+          notes: fence.notes,
+          site: fence.site,
+          visitCount: fence._count.visits,
+        })),
+      };
+    });
+
+    app.post('/geofences', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_UPDATE);
+      const body = createGeofenceSchema.parse(request.body);
+
+      if (body.siteId) {
+        // Checked here for a decent error; the composite tenant foreign key is what actually
+        // makes borrowing another organization's site impossible.
+        const site = await services.prisma.site.findFirst({
+          where: { id: body.siteId, organizationId: actor.organizationId },
+          select: { id: true },
+        });
+        if (!site) throw new NotFoundError('site.not_found', 'Site not found.');
+      }
+
+      const fence = await services.prisma.geofence.create({
+        data: {
+          organizationId: actor.organizationId,
+          name: body.name,
+          kind: body.kind,
+          centerLatitude: body.latitude.toFixed(6),
+          centerLongitude: body.longitude.toFixed(6),
+          radiusMeters: body.radiusMeters,
+          siteId: body.siteId ?? null,
+          notes: body.notes ?? null,
+        },
+        select: { id: true, name: true, kind: true, radiusMeters: true },
+      });
+
+      reply.code(201);
+      return { geofence: fence };
+    });
+
+    app.patch('/geofences/:geofenceId', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.SETTINGS_UPDATE);
+      const { geofenceId } = request.params as { geofenceId: string };
+      const body = updateGeofenceSchema.parse(request.body);
+
+      const existing = await services.prisma.geofence.findFirst({
+        where: { id: geofenceId, organizationId: actor.organizationId },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundError('geofence.not_found', 'Geofence not found.');
+
+      const fence = await services.prisma.geofence.update({
+        where: { id: geofenceId },
+        data: {
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.kind !== undefined ? { kind: body.kind } : {}),
+          ...(body.latitude !== undefined ? { centerLatitude: body.latitude.toFixed(6) } : {}),
+          ...(body.longitude !== undefined ? { centerLongitude: body.longitude.toFixed(6) } : {}),
+          ...(body.radiusMeters !== undefined ? { radiusMeters: body.radiusMeters } : {}),
+          ...(body.siteId !== undefined ? { siteId: body.siteId } : {}),
+          ...(body.notes !== undefined ? { notes: body.notes } : {}),
+          ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+        },
+        select: { id: true, name: true, kind: true, radiusMeters: true, isActive: true },
+      });
+
+      return { geofence: fence };
+    });
+
+    /**
+     * Who is where, right now, and who was where today.
+     *
+     * An open visit — no exit — is the live answer. Deliberately no "estimated" exits: a device
+     * that went quiet inside a fence is reported as still inside, because that is the last thing
+     * the record actually supports.
+     */
+    app.get('/geofences/:geofenceId/visits', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
+      const { geofenceId } = request.params as { geofenceId: string };
+      const now = services.clock.now();
+      const { from, to } = resolveRange(request.query as { from?: string; to?: string }, now);
+
+      const visits = await services.prisma.geofenceVisit.findMany({
+        where: {
+          organizationId: actor.organizationId,
+          geofenceId,
+          enteredAt: { gte: from, lte: to },
+        },
+        select: {
+          id: true,
+          enteredAt: true,
+          exitedAt: true,
+          dwellSeconds: true,
+          tripId: true,
+          trackingSession: {
+            select: {
+              context: true,
+              worker: { select: { firstName: true, lastName: true, employeeNumber: true } },
+              driver: { select: { driverCode: true } },
+            },
+          },
+        },
+        orderBy: { enteredAt: 'desc' },
+        take: 500,
+      });
+
+      return {
+        range: { from: from.toISOString(), to: to.toISOString() },
+        visits: visits.map((visit) => ({
+          id: visit.id,
+          who: visit.trackingSession.worker
+            ? `${visit.trackingSession.worker.firstName} ${visit.trackingSession.worker.lastName}`
+            : (visit.trackingSession.driver?.driverCode ?? '—'),
+          employeeNumber: visit.trackingSession.worker?.employeeNumber ?? null,
+          context: visit.trackingSession.context,
+          enteredAt: visit.enteredAt.toISOString(),
+          exitedAt: visit.exitedAt?.toISOString() ?? null,
+          dwellSeconds: visit.dwellSeconds,
+          tripId: visit.tripId,
+          /** Still there as far as the record goes — not "unknown", and not a guessed exit. */
+          isOpen: visit.exitedAt === null,
+        })),
       };
     });
   };

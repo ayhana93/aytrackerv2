@@ -1,6 +1,6 @@
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
-import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
-import type { AcceptedLocationPoint, PauseInterval, TripState, TripStatus } from './trip.js';
+import type { TrackingState } from '@aytracker/tracking';
+import type { PauseInterval, TripState } from './trip.js';
 
 export interface TripRepository {
   findById(organizationId: OrganizationId, tripId: TripId): Promise<TripState | null>;
@@ -10,17 +10,12 @@ export interface TripRepository {
     driverId: DriverId;
     vehicleId: VehicleId;
     label: string | null;
+    plannedDistanceMeters: number | null;
     startedAt: Date;
     startLatitude: number | null;
     startLongitude: number | null;
     startOdometer: string | null;
   }): Promise<TripState>;
-  updateStatus(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    status: TripStatus;
-    trackingState: TrackingState;
-  }): Promise<void>;
   close(input: {
     organizationId: OrganizationId;
     tripId: TripId;
@@ -51,12 +46,15 @@ export interface TripRepository {
   listPauses(organizationId: OrganizationId, tripId: TripId): Promise<readonly PauseInterval[]>;
 }
 
-export interface LocationPointRepository {
-  appendMany(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    points: readonly AcceptedLocationPoint[];
-  }): Promise<number>;
+/**
+ * Reading a trip's own points.
+ *
+ * Writing them is not this module's job — `@aytracker/module-tracking` owns the single
+ * ingestion path, for both a working day and a trip inside one. What the trip lifecycle still
+ * needs is to read back what was recorded against it, so `endTrip` can recompute distance from
+ * the stored points rather than trusting a running total.
+ */
+export interface TripPointAccess {
   listForTrip(
     organizationId: OrganizationId,
     tripId: TripId,
@@ -69,37 +67,6 @@ export interface LocationPointRepository {
       speedMps: number | null;
     }[]
   >;
-  lastPointAt(organizationId: OrganizationId, tripId: TripId): Promise<Date | null>;
-  /** Retention: deletes raw points older than the cutoff. Trip summaries are kept. */
-  deleteOlderThan(organizationId: OrganizationId, cutoff: Date): Promise<number>;
-}
-
-export interface TrackingEventRepository {
-  record(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    type: TrackingEventType;
-    state: TrackingState;
-    occurredAt: Date;
-    recoveredAt?: Date | null;
-    gapSeconds?: number | null;
-    lastLatitude?: number | null;
-    lastLongitude?: number | null;
-    metadata?: Record<string, unknown>;
-  }): Promise<void>;
-  listForTrip(
-    organizationId: OrganizationId,
-    tripId: TripId,
-  ): Promise<
-    readonly {
-      type: TrackingEventType;
-      state: TrackingState;
-      occurredAt: Date;
-      recoveredAt: Date | null;
-      gapSeconds: number | null;
-    }[]
-  >;
-  latestState(organizationId: OrganizationId, tripId: TripId): Promise<TrackingState | null>;
 }
 
 export interface DriverVehicleAccess {
@@ -111,12 +78,31 @@ export interface DriverVehicleAccess {
     vehicleId: VehicleId;
     odometer: string;
   }): Promise<void>;
+  /**
+   * Takes a vehicle for the duration of a trip.
+   *
+   * Marked automatic, so ending the trip hands it back. An assignment a fleet manager made by
+   * hand is a decision and is never touched by this. Refuses rather than steals: a vehicle
+   * another driver is holding stays with them.
+   */
+  claimForTrip(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    at: Date;
+  }): Promise<void>;
+  /** Hands back an automatic assignment. A no-op when the assignment was a manual one. */
+  releaseAutomatic(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    endedAt: Date;
+  }): Promise<void>;
 }
 
 export interface DriverUnitOfWork {
   readonly trips: TripRepository;
-  readonly locations: LocationPointRepository;
-  readonly trackingEvents: TrackingEventRepository;
+  readonly points: TripPointAccess;
 }
 
 export interface DriverTransactionRunner {

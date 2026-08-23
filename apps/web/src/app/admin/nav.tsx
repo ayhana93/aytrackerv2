@@ -11,6 +11,8 @@ import {
   IconDashboard,
   IconFleet,
   IconHistory,
+  IconGeofence,
+  IconLive,
   IconPeople,
   IconRoute,
   IconSettings,
@@ -36,7 +38,12 @@ interface Entry {
   readonly icon: ReactNode;
 }
 
-const OVERVIEW: readonly Entry[] = [{ href: '/admin', label: 'Табло', icon: IconDashboard }];
+const OVERVIEW: readonly Entry[] = [
+  { href: '/admin', label: 'Табло', icon: IconDashboard },
+  // Directly under the dashboard: "where is everyone right now" is the question this product is
+  // opened for, and it should never be more than one click away.
+  { href: '/admin/live', label: 'На живо', icon: IconLive },
+];
 
 const PEOPLE: readonly Entry[] = [
   { href: '/admin/people', label: 'На смяна', icon: IconPeople },
@@ -50,6 +57,9 @@ const PEOPLE: readonly Entry[] = [
 const FLEET: readonly Entry[] = [
   { href: '/admin/fleet', label: 'Автопарк', icon: IconFleet },
   { href: '/admin/trips', label: 'Маршрути', icon: IconRoute },
+  // "Геозони" rather than "Зони": /admin/areas already owns that word for work areas, and two
+  // navigation entries a synonym apart is how somebody clicks the wrong one every time.
+  { href: '/admin/geofences', label: 'Геозони', icon: IconGeofence },
 ];
 
 const ORGANIZATION: readonly Entry[] = [

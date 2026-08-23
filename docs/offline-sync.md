@@ -91,16 +91,16 @@ backdate a shift.
 
 ## 4. Which actions are offline-capable
 
-| Action                            | Offline | Note                                  |
-| --------------------------------- | ------- | ------------------------------------- |
-| Start / end shift                 | ✅      |                                       |
-| Start / end break                 | ✅      |                                       |
-| Change position                   | ✅      | Eligibility is cached with the picker |
-| Record production                 | ✅      |                                       |
-| Start / pause / resume / end trip | ✅      |                                       |
-| Submit locations                  | ✅      | Queued and backfilled                 |
-| Read own history                  | Cached  | Read-only                             |
-| Any admin action                  | ❌      | Requires connectivity                 |
+| Action            | Offline | Note                                  |
+| ----------------- | ------- | ------------------------------------- |
+| Start / end shift | ✅      |                                       |
+| Start / end break | ✅      |                                       |
+| Change position   | ✅      | Eligibility is cached with the picker |
+| Record production | ✅      |                                       |
+| Start / end trip  | ✅      | There is no pause to queue            |
+| Submit locations  | ✅      | Queued and backfilled                 |
+| Read own history  | Cached  | Read-only                             |
+| Any admin action  | ❌      | Requires connectivity                 |
 
 Position eligibility is cached with the position list. A worker offline for hours could
 theoretically act on stale eligibility — the server re-checks on replay and rejects the action,

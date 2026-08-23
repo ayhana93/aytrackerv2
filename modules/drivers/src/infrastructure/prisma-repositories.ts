@@ -1,19 +1,14 @@
-import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
+import type { DatabaseClient, PrismaClient } from '@aytracker/database';
 import { withTenant } from '@aytracker/database';
+import { ConflictError, NotFoundError } from '@aytracker/domain';
 import type { DriverId, OrganizationId, TripId, VehicleId } from '@aytracker/types';
-import type { TrackingEventType, TrackingState } from '@aytracker/tracking';
-import type {
-  AcceptedLocationPoint,
-  PauseInterval,
-  TripState,
-  TripStatus,
-} from '../domain/trip.js';
+import type { TrackingState } from '@aytracker/tracking';
+import type { PauseInterval, TripState } from '../domain/trip.js';
 import type {
   DriverTransactionRunner,
   DriverUnitOfWork,
   DriverVehicleAccess,
-  LocationPointRepository,
-  TrackingEventRepository,
+  TripPointAccess,
   TripRepository,
 } from '../domain/ports.js';
 
@@ -54,6 +49,7 @@ export class PrismaTripRepository implements TripRepository {
     driverId: DriverId;
     vehicleId: VehicleId;
     label: string | null;
+    plannedDistanceMeters: number | null;
     startedAt: Date;
     startLatitude: number | null;
     startLongitude: number | null;
@@ -65,6 +61,7 @@ export class PrismaTripRepository implements TripRepository {
         driverId: input.driverId,
         vehicleId: input.vehicleId,
         label: input.label,
+        plannedDistanceMeters: input.plannedDistanceMeters,
         status: 'ACTIVE',
         startedAt: input.startedAt,
         startLatitude: input.startLatitude,
@@ -75,18 +72,6 @@ export class PrismaTripRepository implements TripRepository {
       select: TRIP_SELECT,
     });
     return trip as TripState;
-  }
-
-  async updateStatus(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    status: TripStatus;
-    trackingState: TrackingState;
-  }): Promise<void> {
-    await this.db.driverTrip.updateMany({
-      where: { id: input.tripId, organizationId: input.organizationId },
-      data: { status: input.status, trackingState: input.trackingState },
-    });
   }
 
   async close(input: {
@@ -199,35 +184,18 @@ export class PrismaTripRepository implements TripRepository {
   }
 }
 
-export class PrismaLocationPointRepository implements LocationPointRepository {
+/**
+ * A trip's own points, read back through the trip overlay.
+ *
+ * The rows live in `location_points`, owned by whichever tracking session was running. A trip's
+ * points are the subset tagged with its id — the same rows the working day's route is drawn
+ * from, never a second copy.
+ */
+export class PrismaTripPointAccess implements TripPointAccess {
   constructor(private readonly db: DatabaseClient) {}
 
-  async appendMany(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    points: readonly AcceptedLocationPoint[];
-  }): Promise<number> {
-    const result = await this.db.tripLocationPoint.createMany({
-      data: input.points.map((point) => ({
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        timestamp: point.timestamp,
-        latitude: point.latitude.toFixed(6),
-        longitude: point.longitude.toFixed(6),
-        accuracyMeters: point.accuracyMeters ?? null,
-        speedMps: point.speedMps ?? null,
-        heading: point.heading ?? null,
-        altitude: point.altitude ?? null,
-        source: point.source ?? 'GPS',
-        isBackfilled: point.isBackfilled,
-      })),
-      skipDuplicates: true,
-    });
-    return result.count;
-  }
-
   async listForTrip(organizationId: OrganizationId, tripId: TripId) {
-    const points = await this.db.tripLocationPoint.findMany({
+    const points = await this.db.locationPoint.findMany({
       where: { organizationId, tripId },
       select: {
         timestamp: true,
@@ -245,92 +213,6 @@ export class PrismaLocationPointRepository implements LocationPointRepository {
       accuracyMeters: point.accuracyMeters === null ? null : Number(point.accuracyMeters),
       speedMps: point.speedMps === null ? null : Number(point.speedMps),
     }));
-  }
-
-  async lastPointAt(organizationId: OrganizationId, tripId: TripId): Promise<Date | null> {
-    const point = await this.db.tripLocationPoint.findFirst({
-      where: { organizationId, tripId },
-      select: { timestamp: true },
-      orderBy: { timestamp: 'desc' },
-    });
-    return point?.timestamp ?? null;
-  }
-
-  /**
-   * Retention.
-   *
-   * Deletes raw points only. Trip summaries — distance, duration, gaps — survive, so a year-old
-   * cost report still works after the coordinates behind it have been removed. That is the
-   * whole point of keeping the two retention windows separate.
-   */
-  async deleteOlderThan(organizationId: OrganizationId, cutoff: Date): Promise<number> {
-    const result = await this.db.tripLocationPoint.deleteMany({
-      where: { organizationId, timestamp: { lt: cutoff } },
-    });
-    return result.count;
-  }
-}
-
-export class PrismaTrackingEventRepository implements TrackingEventRepository {
-  constructor(private readonly db: DatabaseClient) {}
-
-  async record(input: {
-    organizationId: OrganizationId;
-    tripId: TripId;
-    type: TrackingEventType;
-    state: TrackingState;
-    occurredAt: Date;
-    recoveredAt?: Date | null;
-    gapSeconds?: number | null;
-    lastLatitude?: number | null;
-    lastLongitude?: number | null;
-    metadata?: Record<string, unknown>;
-  }): Promise<void> {
-    await this.db.trackingEvent.create({
-      data: {
-        organizationId: input.organizationId,
-        tripId: input.tripId,
-        type: input.type,
-        state: input.state,
-        occurredAt: input.occurredAt,
-        recoveredAt: input.recoveredAt ?? null,
-        gapSeconds: input.gapSeconds ?? null,
-        lastLatitude: input.lastLatitude?.toFixed(6) ?? null,
-        lastLongitude: input.lastLongitude?.toFixed(6) ?? null,
-        metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
-      },
-    });
-  }
-
-  async listForTrip(organizationId: OrganizationId, tripId: TripId) {
-    return this.db.trackingEvent.findMany({
-      where: { organizationId, tripId },
-      select: {
-        type: true,
-        state: true,
-        occurredAt: true,
-        recoveredAt: true,
-        gapSeconds: true,
-      },
-      orderBy: { occurredAt: 'asc' },
-    }) as Promise<
-      readonly {
-        type: TrackingEventType;
-        state: TrackingState;
-        occurredAt: Date;
-        recoveredAt: Date | null;
-        gapSeconds: number | null;
-      }[]
-    >;
-  }
-
-  async latestState(organizationId: OrganizationId, tripId: TripId): Promise<TrackingState | null> {
-    const event = await this.db.trackingEvent.findFirst({
-      where: { organizationId, tripId },
-      select: { state: true },
-      orderBy: { occurredAt: 'desc' },
-    });
-    return (event?.state as TrackingState | undefined) ?? null;
   }
 }
 
@@ -378,6 +260,86 @@ export class PrismaDriverVehicleAccess implements DriverVehicleAccess {
       data: { odometerCurrent: input.odometer },
     });
   }
+
+  /**
+   * Takes a vehicle for a trip.
+   *
+   * The application check below is for the error message; the decision belongs to
+   * `vehicle_assignments_one_open_per_vehicle`. Two drivers tapping the same van at 06:00 both
+   * pass this read and exactly one survives the unique index, which is the only version of this
+   * that is actually correct under concurrency.
+   */
+  async claimForTrip(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    at: Date;
+  }): Promise<void> {
+    const vehicle = await this.db.vehicle.findFirst({
+      where: { id: input.vehicleId, organizationId: input.organizationId, deletedAt: null },
+      select: { status: true },
+    });
+    if (!vehicle) {
+      throw new NotFoundError('vehicle.not_found', 'Vehicle not found.');
+    }
+    if (vehicle.status !== 'ACTIVE') {
+      throw new ConflictError(
+        'driving.vehicle_not_available',
+        `Vehicle is ${vehicle.status.toLowerCase().replace(/_/g, ' ')}.`,
+        { details: { status: vehicle.status } },
+      );
+    }
+
+    const held = await this.db.vehicleAssignment.findFirst({
+      where: { organizationId: input.organizationId, vehicleId: input.vehicleId, endedAt: null },
+      select: { driverId: true },
+    });
+    if (held && held.driverId !== input.driverId) {
+      throw new ConflictError(
+        'driving.vehicle_taken',
+        'This vehicle is currently assigned to another driver.',
+      );
+    }
+    if (held) return;
+
+    // A violation here is translated by `@aytracker/database` into
+    // `fleet.vehicle_already_assigned` or `fleet.driver_already_assigned`, which is what the
+    // driver is told. Nothing catches it locally, because there is nothing better to say.
+    await this.db.vehicleAssignment.create({
+      data: {
+        organizationId: input.organizationId,
+        driverId: input.driverId,
+        vehicleId: input.vehicleId,
+        startedAt: input.at,
+        isAutomatic: true,
+      },
+    });
+  }
+
+  /**
+   * Hands back an assignment this module created.
+   *
+   * Scoped to `isAutomatic`, which is the whole point of that column: a fleet manager who
+   * assigned a van to a driver for the month does not lose that because the driver finished a
+   * trip on a Tuesday.
+   */
+  async releaseAutomatic(input: {
+    organizationId: OrganizationId;
+    driverId: DriverId;
+    vehicleId: VehicleId;
+    endedAt: Date;
+  }): Promise<void> {
+    await this.db.vehicleAssignment.updateMany({
+      where: {
+        organizationId: input.organizationId,
+        driverId: input.driverId,
+        vehicleId: input.vehicleId,
+        endedAt: null,
+        isAutomatic: true,
+      },
+      data: { endedAt: input.endedAt },
+    });
+  }
 }
 
 export class PrismaDriverTransactionRunner implements DriverTransactionRunner {
@@ -390,8 +352,7 @@ export class PrismaDriverTransactionRunner implements DriverTransactionRunner {
     return withTenant(this.prisma, organizationId, async (tx) =>
       fn({
         trips: new PrismaTripRepository(tx),
-        locations: new PrismaLocationPointRepository(tx),
-        trackingEvents: new PrismaTrackingEventRepository(tx),
+        points: new PrismaTripPointAccess(tx),
       }),
     );
   }

@@ -117,6 +117,16 @@ async function loginWorker(employeeNumber = '1001'): Promise<LoggedIn> {
   return collectCookies(response.headers['set-cookie']);
 }
 
+async function loginAdmin(slug: string = tenant.slug): Promise<LoggedIn> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/v1/auth/login',
+    payload: { email: `admin@${slug}.test`, password: 'integration-test-pass' },
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  return collectCookies(response.headers['set-cookie']);
+}
+
 async function loginDriver(driverCode = 'D001'): Promise<LoggedIn> {
   const response = await app.inject({
     method: 'POST',
@@ -597,12 +607,80 @@ describe('worker position picker', () => {
       headers: { cookie: worker.cookies },
     });
 
-    const offered = response
-      .json()
-      .availablePositions.map((entry: { positionId: string }) => entry.positionId);
+    const offered = response.json().availablePositions.map((entry: { id: string }) => entry.id);
     expect(offered).toContain(tenant.positionIds.machine1);
     expect(offered).toContain(tenant.positionIds.packaging);
     expect(offered).not.toContain(tenant.positionIds.restricted);
+  });
+
+  /**
+   * The picker has to be renderable from this response alone.
+   *
+   * It used to carry ids and nothing else, which is why the worker portal shipped with a
+   * hardcoded list of five invented positions: there was no name to show. A picker that needs
+   * the client to supply its own labels is a picker that will eventually show somebody else's.
+   */
+  it('names every position it offers, and says which area it is in', async () => {
+    const worker = await loginWorker();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: worker.cookies },
+    });
+
+    const body = response.json();
+    expect(body.availablePositions.length).toBeGreaterThan(0);
+    for (const position of body.availablePositions) {
+      expect(typeof position.name).toBe('string');
+      expect(position.name.length).toBeGreaterThan(0);
+      expect(position.kind === 'STANDARD' || position.kind === 'DRIVING').toBe(true);
+      expect(position).toHaveProperty('workArea');
+    }
+  });
+
+  /**
+   * Elapsed time is measured against the server's clock, not the device's.
+   *
+   * Without this field the portal had to anchor its timer to `Date.now()`, and a tablet whose
+   * clock was hours out rendered a shift that started a minute ago as hours long.
+   */
+  it('sends the server time so the portal never times a shift by the device clock', async () => {
+    const worker = await loginWorker();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: worker.cookies },
+    });
+
+    const serverTime = response.json().serverTime;
+    expect(typeof serverTime).toBe('string');
+    expect(Number.isNaN(Date.parse(serverTime))).toBe(false);
+  });
+
+  /**
+   * A phone knows which factory its owner walked into; it does not know the site's UUID.
+   *
+   * `siteId` used to be required, which meant the one screen that has only a session could not
+   * call this endpoint at all.
+   */
+  it('starts a shift without being told which site, resolving it from the worker', async () => {
+    const worker = await loginWorker();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/shift/start',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().shiftId).toBeTruthy();
+
+    const state = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: worker.cookies },
+    });
+    expect(state.json().shift.actualStart).toBeTruthy();
   });
 
   it('refuses a position change to an ineligible position even when asked directly', async () => {
@@ -629,5 +707,826 @@ describe('worker position picker', () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json().error.code).toBe('position.qualification_required');
+  });
+});
+
+/**
+ * A driver cannot stop the recording of a trip that is running.
+ *
+ * This is the rule the whole driver portal is built around, so it is tested at the HTTP edge
+ * rather than trusted to the absence of a button. A pause control let a driver switch the record
+ * off, drive a hundred kilometres, and switch it back on — leaving fuel burned against no trip
+ * and a straight line drawn through the middle of the route.
+ */
+describe('a trip records from start to finish', () => {
+  async function startTrip(driver: LoggedIn, payload: Record<string, unknown> = {}) {
+    return app.inject({
+      method: 'POST',
+      url: '/api/v1/driver/trip/start',
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID(), ...payload },
+    });
+  }
+
+  it('has no pause endpoint at all', async () => {
+    const driver = await loginDriver('D001');
+    const started = await startTrip(driver);
+    expect(started.statusCode).toBe(200);
+    const tripId = started.json().tripId;
+
+    const paused = await app.inject({
+      method: 'POST',
+      url: `/api/v1/driver/trip/${tripId}/pause`,
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(paused.statusCode).toBe(404);
+
+    const resumed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/driver/trip/${tripId}/resume`,
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(resumed.statusCode).toBe(404);
+  });
+
+  it('does not grant a driver session the permission to pause one', async () => {
+    const driver = await loginDriver('D001');
+    const session = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { cookie: driver.cookies },
+    });
+    expect(session.json().permissions).not.toContain('driver.trip.pause');
+  });
+
+  it('starts a trip with no route at all', async () => {
+    const driver = await loginDriver('D001');
+    const started = await startTrip(driver);
+    expect(started.statusCode).toBe(200);
+
+    const state = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: driver.cookies },
+    });
+    expect(state.json().trip.label).toBeNull();
+    expect(state.json().trip.plannedDistanceMeters).toBeNull();
+  });
+
+  it('records a route and its planned distance when one is given', async () => {
+    const driver = await loginDriver('D001');
+    const started = await startTrip(driver, {
+      label: 'София → Пловдив',
+      plannedDistanceKm: 145,
+    });
+    expect(started.statusCode).toBe(200);
+
+    const state = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: driver.cookies },
+    });
+    expect(state.json().trip.label).toBe('София → Пловдив');
+    // Kilometres in, metres out. The domain stores metres; the driver typed kilometres.
+    expect(state.json().trip.plannedDistanceMeters).toBe(145_000);
+  });
+
+  it('refuses a planned distance with no route to attach it to', async () => {
+    const driver = await loginDriver('D001');
+    const started = await startTrip(driver, { plannedDistanceKm: 145 });
+    expect(started.statusCode).toBe(400);
+  });
+
+  /**
+   * A driver who holds no vehicle picks one, and gives it back when the trip ends.
+   *
+   * Without this a driver who logs in directly — rather than arriving through the worker
+   * handoff — had no way to get a vehicle at all, and every trip start failed with
+   * `trip.no_vehicle_assigned` on a fleet with free vans standing in it.
+   */
+  it('lets a driver take a free vehicle for a trip and releases it at the end', async () => {
+    const driver = await loginDriver('D002');
+
+    // D002 holds a manual assignment in the fixture. Ending it puts them in the position of a
+    // driver who arrives with nothing.
+    await prisma.vehicleAssignment.updateMany({
+      where: { organizationId: tenant.organizationId, driverId: tenant.otherDriverId },
+      data: { endedAt: new Date() },
+    });
+
+    const offered = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/vehicles',
+      headers: { cookie: driver.cookies },
+    });
+    expect(offered.statusCode).toBe(200);
+    const ids = offered.json().vehicles.map((vehicle: { id: string }) => vehicle.id);
+    expect(ids).toContain(tenant.freeVehicleId);
+    // Held by D001 under a manual assignment, so it is never offered to anybody else.
+    expect(ids).not.toContain(tenant.vehicleId);
+
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/v1/driver/trip/start',
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID(), vehicleId: tenant.freeVehicleId },
+    });
+    expect(started.statusCode).toBe(200);
+
+    const claimed = await prisma.vehicleAssignment.findFirst({
+      where: {
+        organizationId: tenant.organizationId,
+        vehicleId: tenant.freeVehicleId,
+        endedAt: null,
+      },
+      select: { driverId: true, isAutomatic: true },
+    });
+    expect(claimed?.driverId).toBe(tenant.otherDriverId);
+    // Automatic, which is what makes it safe to hand back. A manual assignment never is.
+    expect(claimed?.isAutomatic).toBe(true);
+
+    const ended = await app.inject({
+      method: 'POST',
+      url: `/api/v1/driver/trip/${started.json().tripId}/end`,
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(ended.statusCode).toBe(200);
+
+    const stillHeld = await prisma.vehicleAssignment.findFirst({
+      where: {
+        organizationId: tenant.organizationId,
+        vehicleId: tenant.freeVehicleId,
+        endedAt: null,
+      },
+    });
+    expect(stillHeld).toBeNull();
+  });
+
+  it('never offers a vehicle another driver is holding', async () => {
+    const driver = await loginDriver('D002');
+    const offered = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/vehicles',
+      headers: { cookie: driver.cookies },
+    });
+    const ids = offered.json().vehicles.map((vehicle: { id: string }) => vehicle.id);
+    expect(ids).not.toContain(tenant.vehicleId);
+  });
+
+  /**
+   * The driver's screen shows what the server computed, including the fuel estimate.
+   *
+   * Litres come from the vehicle's recorded consumption; the cost additionally needs a price
+   * from settings. Neither is ever invented, so both halves are checked separately.
+   */
+  it('estimates fuel from the vehicle and the organization price, and nothing else', async () => {
+    const driver = await loginDriver('D001');
+    const started = await startTrip(driver);
+
+    // 100 km covered. Set directly because this test is about the arithmetic on top of the
+    // distance, not about ingestion — which `driving-handoff` and the tracking suite cover.
+    await prisma.driverTrip.update({
+      where: { id: started.json().tripId },
+      data: { distanceMeters: 100_000 },
+    });
+
+    const withoutPrice = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: driver.cookies },
+    });
+    // The fixture vehicle records 8.4 L/100 km, so litres are knowable with no price at all.
+    expect(withoutPrice.json().fuel.liters).toBeCloseTo(8.4, 3);
+    expect(withoutPrice.json().fuel.cost).toBeNull();
+
+    await prisma.organizationSettings.upsert({
+      where: { organizationId: tenant.organizationId },
+      create: { organizationId: tenant.organizationId, fuelPricePerLiter: '2.4500' },
+      update: { fuelPricePerLiter: '2.4500' },
+    });
+
+    const withPrice = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: driver.cookies },
+    });
+    // 8.4 L at 2.45 = 20.58. Exact, as a decimal string — the price keeps its own precision
+    // until the multiplication is done, and the result is rounded once.
+    expect(withPrice.json().fuel.cost).toBe('20.58');
+  });
+
+  /**
+   * A three-decimal pump price is the ordinary case, not an edge one.
+   *
+   * `money()` caps a euro amount at two decimals, so passing the unit price through it first
+   * threw `money.excess_precision` outright — which would have made every fuel figure on a
+   * realistically-priced fleet a 500.
+   */
+  it('costs a trip at a pump price with more decimals than the currency has', async () => {
+    const driver = await loginDriver('D001');
+    const started = await startTrip(driver);
+    await prisma.driverTrip.update({
+      where: { id: started.json().tripId },
+      data: { distanceMeters: 100_000 },
+    });
+    await prisma.organizationSettings.upsert({
+      where: { organizationId: tenant.organizationId },
+      create: { organizationId: tenant.organizationId, fuelPricePerLiter: '1.7590' },
+      update: { fuelPricePerLiter: '1.7590' },
+    });
+
+    const state = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: driver.cookies },
+    });
+    expect(state.statusCode).toBe(200);
+    // 8.4 L at 1.759 = 14.7756, rounded once at the end.
+    expect(state.json().fuel.cost).toBe('14.78');
+  });
+
+  it('sends the server time so the trip timer never runs off the device clock', async () => {
+    const driver = await loginDriver('D001');
+    const state = await app.inject({
+      method: 'GET',
+      url: '/api/v1/driver/state',
+      headers: { cookie: driver.cookies },
+    });
+    expect(Number.isNaN(Date.parse(state.json().serverTime))).toBe(false);
+  });
+});
+
+/**
+ * Option C: one phone, one stream, two contexts.
+ *
+ * The behaviour this whole design exists for, exercised through the real API rather than by
+ * calling services directly:
+ *
+ *   Start work  → tracking starts
+ *   Start trip  → the SAME session keeps running, points begin carrying the trip
+ *   End trip    → tracking continues, because the employee is still at work
+ *   End work    → tracking stops, and nothing more may be recorded
+ *
+ * A second GPS pipeline would pass none of this: it would open a second session at the trip, and
+ * close tracking when the trip ended.
+ */
+describe('work tracking, and a driver trip inside it', () => {
+  /**
+   * Starts a shift and backdates its tracking session by half an hour.
+   *
+   * Only the clock is moved. A session that opened this millisecond has no window to report
+   * into: every point a test could send would sit before `startedAt` and be corrected onto it,
+   * which tests the clock-skew rule rather than whatever the test was about. Half an hour is
+   * what a shift looks like by the time a phone has anything to say.
+   */
+  async function startShift(worker: LoggedIn) {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/shift/start',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: { clientActionId: randomUUID(), initialPositionId: tenant.positionIds.machine1 },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { shiftId: string; trackingSessionId: string };
+
+    await prisma.trackingSession.update({
+      where: { id: body.trackingSessionId },
+      data: { startedAt: new Date(Date.now() - 30 * 60 * 1000) },
+    });
+    return body;
+  }
+
+  /**
+   * A batch as a real device would send it.
+   *
+   * Points are spaced at the organization's sampling floor (15 s by default) rather than one a
+   * second: the server thins anything faster, so a one-second batch would test the flood guard
+   * instead of the thing each test is about. `offsetSeconds` moves a later batch clear of the
+   * one before it, the way a device that keeps reporting actually does.
+   */
+  const SAMPLE_SECONDS = 20;
+
+  async function postPoints(actor: LoggedIn, count = 3, offsetSeconds = 0) {
+    const now = Date.now();
+    return app.inject({
+      method: 'POST',
+      url: '/api/v1/tracking/points',
+      headers: { cookie: actor.cookies, 'x-csrf-token': actor.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        deviceReported: 'ONLINE',
+        batteryLevel: 0.62,
+        points: Array.from({ length: count }, (_, index) => ({
+          timestamp: new Date(
+            now - (count - index) * SAMPLE_SECONDS * 1000 + offsetSeconds * 1000,
+          ).toISOString(),
+          latitude: 42.6977 + index * 0.001,
+          longitude: 23.3219 + index * 0.001,
+          accuracyMeters: 8,
+          speedMps: 12,
+        })),
+      },
+    });
+  }
+
+  it('opens a work session when the shift starts, and refuses points before that', async () => {
+    const worker = await loginWorker();
+
+    // No shift, no session, no collection. The privacy rule at the edge.
+    const early = await postPoints(worker);
+    expect(early.statusCode).toBe(403);
+    expect(early.json().error.code).toBe('tracking.no_open_session');
+
+    const { trackingSessionId } = await startShift(worker);
+    expect(trackingSessionId).toBeTruthy();
+
+    const accepted = await postPoints(worker);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().accepted).toBe(3);
+    expect(accepted.json().state).toBe('ACTIVE');
+  });
+
+  /**
+   * The sampling floor is enforced, not requested.
+   *
+   * `/tracking/state` hands the device a minimum interval. A client that ignores it — an old
+   * build, a bug, or someone curious — must not be able to write a point a second into the
+   * busiest table in the system. The batch still succeeds: an over-eager client should not be
+   * able to fail an employee's whole upload and lose the fixes that were worth keeping.
+   */
+  it('thins a batch that ignores the sampling floor instead of storing all of it', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const now = Date.now();
+    const flood = await app.inject({
+      method: 'POST',
+      url: '/api/v1/tracking/points',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        deviceReported: 'ONLINE',
+        points: Array.from({ length: 60 }, (_, index) => ({
+          timestamp: new Date(now - (60 - index) * 1000).toISOString(),
+          latitude: 42.6977 + index * 0.0001,
+          longitude: 23.3219 + index * 0.0001,
+          accuracyMeters: 8,
+          speedMps: 12,
+        })),
+      },
+    });
+
+    expect(flood.statusCode).toBe(200);
+    // A minute of one-second fixes, against a 15-second floor: four or five survive.
+    expect(flood.json().accepted).toBeLessThanOrEqual(5);
+    expect(flood.json().dropped).toBeGreaterThanOrEqual(55);
+
+    const stored = await prisma.locationPoint.count({
+      where: { organizationId: tenant.organizationId, trackingSessionId },
+    });
+    expect(stored).toBe(flood.json().accepted);
+  });
+
+  it('keeps the same session when a trip starts inside the shift', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+    await postPoints(worker);
+
+    const begun = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/driving/begin',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        positionId: tenant.positionIds.driving,
+        vehicleId: tenant.vehicleId,
+        label: 'София → Пловдив',
+      },
+    });
+    expect(begun.statusCode).toBe(200);
+    const tripId = begun.json().tripId;
+
+    // One session, not two. A second one would mean the phone reporting into two streams.
+    const sessions = await prisma.trackingSession.findMany({
+      where: { organizationId: tenant.organizationId, endedAt: null },
+      select: { id: true, context: true },
+    });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.id).toBe(trackingSessionId);
+    expect(sessions[0]?.context).toBe('WORK');
+
+    /*
+     * Points sent now carry the trip as well — same rows, two attributions.
+     *
+     * One point, dated now: the trip started a moment ago, and the server decides the overlay
+     * from each timestamp rather than from the request, so a backdated fix would correctly come
+     * back untagged and prove nothing about the overlay.
+     */
+    const during = await postPoints(worker, 1, SAMPLE_SECONDS);
+    expect(during.statusCode).toBe(200);
+    expect(during.json().accepted).toBe(1);
+
+    const tagged = await prisma.locationPoint.count({
+      where: { organizationId: tenant.organizationId, tripId },
+    });
+    expect(tagged).toBeGreaterThan(0);
+
+    const total = await prisma.locationPoint.count({
+      where: { organizationId: tenant.organizationId, trackingSessionId },
+    });
+    // Every point belongs to the one session; the trip-tagged ones are a subset, not a copy.
+    expect(total).toBeGreaterThan(tagged);
+  });
+
+  it('keeps tracking the employee after their trip ends', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const begun = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/driving/begin',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        positionId: tenant.positionIds.driving,
+        vehicleId: tenant.vehicleId,
+      },
+    });
+    const tripId = begun.json().tripId;
+
+    const ended = await app.inject({
+      method: 'POST',
+      url: `/api/v1/driver/trip/${tripId}/end`,
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(ended.statusCode).toBe(200);
+    // The session was the working day's, so the trip did not own it and did not close it.
+    expect(ended.json().trackingStopped).toBe(false);
+
+    const session = await prisma.trackingSession.findUnique({
+      where: { id: trackingSessionId },
+      select: { endedAt: true },
+    });
+    expect(session?.endedAt).toBeNull();
+
+    // And the phone may still report, because the person is still at work.
+    const after = await postPoints(worker);
+    expect(after.statusCode).toBe(200);
+  });
+
+  it('stops tracking when the shift ends, and refuses everything after', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+    await postPoints(worker);
+
+    const ended = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/shift/end',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(ended.statusCode).toBe(200);
+    expect(ended.json().tracking).not.toBeNull();
+
+    const session = await prisma.trackingSession.findUnique({
+      where: { id: trackingSessionId },
+      select: { endedAt: true, trackingState: true },
+    });
+    expect(session?.endedAt).not.toBeNull();
+    expect(session?.trackingState).toBe('STOPPED');
+
+    const after = await postPoints(worker);
+    expect(after.statusCode).toBe(403);
+    expect(after.json().error.code).toBe('tracking.no_open_session');
+  });
+
+  /**
+   * A driver who signs in at the driver door has no working day, so the trip must open a session
+   * of its own — otherwise nothing would authorise their phone to report at all.
+   */
+  it('gives a driver-only trip a session of its own, and closes it with the trip', async () => {
+    const driver = await loginDriver('D001');
+
+    const early = await postPoints(driver);
+    expect(early.statusCode).toBe(403);
+
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/v1/driver/trip/start',
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(started.statusCode).toBe(200);
+    expect(started.json().trackingContext).toBe('DRIVER_TRIP');
+
+    const accepted = await postPoints(driver);
+    expect(accepted.statusCode).toBe(200);
+
+    const ended = await app.inject({
+      method: 'POST',
+      url: `/api/v1/driver/trip/${started.json().tripId}/end`,
+      headers: { cookie: driver.cookies, 'x-csrf-token': driver.csrfToken },
+      payload: { clientActionId: randomUUID() },
+    });
+    expect(ended.json().trackingStopped).toBe(true);
+
+    const after = await postPoints(driver);
+    expect(after.statusCode).toBe(403);
+  });
+
+  it('never lets one organization see another’s live tracking', async () => {
+    const other = await createTestTenant('tenant-other-live');
+    await grantAllFeatures(other.organizationId);
+    await prisma.trackingSession.create({
+      data: {
+        organizationId: other.organizationId,
+        context: 'DRIVER_TRIP',
+        driverId: other.driverId,
+        tripId: (
+          await prisma.driverTrip.create({
+            data: {
+              organizationId: other.organizationId,
+              driverId: other.driverId,
+              vehicleId: other.vehicleId,
+              status: 'ACTIVE',
+              startedAt: new Date(),
+            },
+            select: { id: true },
+          })
+        ).id,
+        startedAt: new Date(),
+      },
+    });
+
+    const admin = await loginAdmin();
+    const live = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/live',
+      headers: { cookie: admin.cookies },
+    });
+    expect(live.statusCode).toBe(200);
+    // The other tenant has a live session; this admin must not be able to see it.
+    expect(live.json().subjects).toHaveLength(0);
+  });
+
+  it('shows the admin who is being tracked, and the day split into segments', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+    await postPoints(worker, 4);
+
+    const admin = await loginAdmin();
+    const live = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/live',
+      headers: { cookie: admin.cookies },
+    });
+    expect(live.statusCode).toBe(200);
+    const subject = live.json().subjects[0];
+    expect(subject.context).toBe('WORK');
+    expect(subject.name).toContain('Test');
+    expect(subject.latitude).not.toBeNull();
+    // Battery is recorded because it changes the sampling interval, not because a phone has one.
+    expect(subject.batteryLevel).toBeCloseTo(0.62, 2);
+
+    const track = await app.inject({
+      method: 'GET',
+      url: `/api/v1/admin/live/${trackingSessionId}/track`,
+      headers: { cookie: admin.cookies },
+    });
+    expect(track.statusCode).toBe(200);
+    expect(track.json().segments[0].context).toBe('WORK');
+  });
+
+  /**
+   * Geofences, end to end: a fence, a stay inside it, and one visit with one pair of events.
+   *
+   * The assertions that matter are the counts. Everything here is recomputed from the whole point
+   * stream on every batch, so the failure this guards against is not "nothing happened" but "it
+   * happened again, and again, and again" — a visit row per upload and an event log nobody can
+   * read.
+   */
+  it('records one visit for one stay, however many batches it took', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const admin = await loginAdmin();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/geofences',
+      headers: { cookie: admin.cookies, 'x-csrf-token': admin.csrfToken },
+      payload: {
+        name: 'Клиент',
+        kind: 'CUSTOMER',
+        latitude: 42.75,
+        longitude: 23.4,
+        radiusMeters: 200,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const geofenceId = created.json().geofence.id;
+
+    // Away, then inside for twelve minutes, then away again — sent as two separate uploads so a
+    // crossing has to survive being split across batches.
+    const base = Date.now() - 25 * 60 * 1000;
+    const upload = (points: readonly { minute: number; lat: number; lon: number }[]) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/tracking/points',
+        headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+        payload: {
+          clientActionId: randomUUID(),
+          deviceReported: 'ONLINE',
+          points: points.map((point) => ({
+            timestamp: new Date(base + point.minute * 60_000).toISOString(),
+            latitude: point.lat,
+            longitude: point.lon,
+            accuracyMeters: 8,
+            speedMps: 0,
+          })),
+        },
+      });
+
+    const approach = Array.from({ length: 4 }, (_, index) => ({
+      minute: index,
+      lat: 42.7 + index * 0.005,
+      lon: 23.35 + index * 0.005,
+    }));
+    const inside = Array.from({ length: 12 }, (_, index) => ({
+      minute: 4 + index,
+      lat: 42.7501,
+      lon: 23.4001,
+    }));
+    const away = Array.from({ length: 4 }, (_, index) => ({
+      minute: 16 + index,
+      lat: 42.76 + index * 0.01,
+      lon: 23.42 + index * 0.01,
+    }));
+
+    expect((await upload([...approach, ...inside])).statusCode).toBe(200);
+    expect((await upload(away)).statusCode).toBe(200);
+
+    const visits = await app.inject({
+      method: 'GET',
+      url: `/api/v1/admin/geofences/${geofenceId}/visits`,
+      headers: { cookie: admin.cookies },
+    });
+    expect(visits.statusCode).toBe(200);
+    expect(visits.json().visits).toHaveLength(1);
+    expect(visits.json().visits[0].isOpen).toBe(false);
+    expect(visits.json().visits[0].dwellSeconds).toBeGreaterThan(0);
+
+    const events = await prisma.trackingEvent.groupBy({
+      by: ['type'],
+      where: {
+        organizationId: tenant.organizationId,
+        trackingSessionId,
+        type: { in: ['GEOFENCE_ENTER', 'GEOFENCE_EXIT'] },
+      },
+      _count: { _all: true },
+    });
+    expect(events.map((row) => [row.type, row._count._all]).sort()).toEqual([
+      ['GEOFENCE_ENTER', 1],
+      ['GEOFENCE_EXIT', 1],
+    ]);
+
+    // Re-sending changes nothing: the derivation is idempotent, not append-only.
+    expect((await upload([...approach, ...inside])).statusCode).toBe(200);
+    expect(
+      await prisma.geofenceVisit.count({
+        where: { organizationId: tenant.organizationId, trackingSessionId },
+      }),
+    ).toBe(1);
+  });
+
+  /**
+   * Speed alerting is off until somebody sets a limit, and one stretch is one alert.
+   *
+   * Both halves matter. A default limit would report employees against a number their employer
+   * never chose; an alert per sample would bury the one that mattered under two hundred that
+   * did not.
+   */
+  it('says nothing about speed until a limit is set, then reports a stretch once', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const fast = (from: number) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/tracking/points',
+        headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+        payload: {
+          clientActionId: randomUUID(),
+          deviceReported: 'ONLINE',
+          points: Array.from({ length: 6 }, (_, index) => ({
+            timestamp: new Date(Date.now() - (from - index) * 60_000).toISOString(),
+            latitude: 42.7 + index * 0.01,
+            longitude: 23.35 + index * 0.01,
+            accuracyMeters: 8,
+            speedMps: 33, // ~119 km/h
+          })),
+        },
+      });
+
+    expect((await fast(20)).statusCode).toBe(200);
+    // No limit configured: nothing to exceed.
+    expect(
+      await prisma.trackingEvent.count({
+        where: { organizationId: tenant.organizationId, trackingSessionId, type: 'SPEED_EXCEEDED' },
+      }),
+    ).toBe(0);
+
+    const admin = await loginAdmin();
+    const saved = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': admin.csrfToken },
+      payload: { speedLimitKph: 90 },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().speedLimitKph).toBe(90);
+
+    // The same stretch, now measured against a limit. Two more uploads must not multiply it.
+    expect((await fast(14)).statusCode).toBe(200);
+    expect((await fast(8)).statusCode).toBe(200);
+
+    const alerts = await prisma.trackingEvent.findMany({
+      where: { organizationId: tenant.organizationId, trackingSessionId, type: 'SPEED_EXCEEDED' },
+      select: { metadata: true },
+    });
+    expect(alerts).toHaveLength(1);
+    expect((alerts[0]!.metadata as { peakKph: number }).peakKph).toBeGreaterThanOrEqual(118);
+
+    // And clearing the limit turns it off again, rather than falling back to some default.
+    const cleared = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/settings',
+      headers: { cookie: admin.cookies, 'x-csrf-token': admin.csrfToken },
+      payload: { speedLimitKph: null },
+    });
+    expect(cleared.json().speedLimitKph).toBeNull();
+  });
+
+  it('counts the workforce in the database, not from a capped list', async () => {
+    const worker = await loginWorker();
+    await startShift(worker);
+
+    const admin = await loginAdmin();
+    const workforce = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/workforce',
+      headers: { cookie: admin.cookies },
+    });
+    expect(workforce.statusCode).toBe(200);
+    const counts = workforce.json().counts;
+    expect(counts.employed).toBeGreaterThan(0);
+    expect(counts.working).toBeGreaterThanOrEqual(1);
+    // Someone whose phone has gone quiet is still at work. The count says so separately rather
+    // than folding them into "working" as though we could still see them.
+    expect(counts).toHaveProperty('notReporting');
+    expect(counts).toHaveProperty('untracked');
+  });
+
+  /**
+   * The one question the live map exists to answer: who has which van, and where is it.
+   *
+   * A worker who takes a vehicle keeps their WORK session — the trip is an overlay on the day,
+   * so the session never points at it. Reading the vehicle off the session alone would leave
+   * every driving employee showing as a person with no vehicle, which is the case this screen
+   * is for.
+   */
+  it('shows the admin which vehicle a working employee is driving', async () => {
+    const worker = await loginWorker();
+    await startShift(worker);
+    await postPoints(worker, 2);
+
+    const begun = await app.inject({
+      method: 'POST',
+      url: '/api/v1/worker/driving/begin',
+      headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+      payload: {
+        clientActionId: randomUUID(),
+        positionId: tenant.positionIds.driving,
+        vehicleId: tenant.vehicleId,
+        label: 'Склад → Клиент',
+      },
+    });
+    expect(begun.statusCode).toBe(200);
+
+    const admin = await loginAdmin();
+    const live = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/live',
+      headers: { cookie: admin.cookies },
+    });
+    const subject = live.json().subjects[0];
+    // Still one WORK session — and now it says what they are driving.
+    expect(subject.context).toBe('WORK');
+    expect(subject.vehicle).not.toBeNull();
+    expect(subject.trip.id).toBe(begun.json().tripId);
+    expect(subject.trip.label).toBe('Склад → Клиент');
   });
 });

@@ -260,8 +260,17 @@ pnpm db:migrate:deploy
 pnpm db:seed
 ```
 
-Seed output prints the demo credentials. `SEED_DEMO=false` seeds only platform reference data,
-which is what production runs.
+`pnpm db:seed` seeds platform reference data only — markets, plans, features, system roles —
+which is what production runs. The demo organization is created only with `SEED_DEMO=true`:
+
+```bash
+SEED_DEMO=true pnpm db:seed   # adds the demo factory and prints its credentials
+```
+
+Opt-in rather than opt-out, deliberately. The guard used to be `NODE_ENV !== 'production'`,
+which is unset often enough on a platform that builds and runs from one image that a seed run
+against a live database fabricated a worker, five positions and three vehicles inside a real
+customer's tenant.
 
 Integration tests want their own database:
 

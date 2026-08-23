@@ -20,6 +20,7 @@
   "dependencies": {
     "@aytracker/database": "workspace:*",
     "@aytracker/domain": "workspace:*",
+    "@aytracker/module-tracking": "workspace:*",
     "@aytracker/module-workforce": "workspace:*",
     "@aytracker/tracking": "workspace:*",
     "@aytracker/types": "workspace:*",

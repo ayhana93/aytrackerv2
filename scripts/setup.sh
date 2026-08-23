@@ -109,8 +109,11 @@ step "Building workspace packages"
 pnpm db:generate 2>&1 | tail -2
 pnpm build 2>&1 | tail -3
 
-step "Seeding demo data"
-pnpm db:seed 2>&1 | tail -8
+step "Seeding platform data and the demo organization"
+# SEED_DEMO is explicit, and this is the one place that sets it. The demo factory exists for
+# local development and sales demos, and the seed refuses to invent it anywhere else — a
+# customer who has entered no vehicles must never find three of them in their account.
+SEED_DEMO=true pnpm db:seed 2>&1 | tail -8
 
 # ---------------------------------------------------------------------------
 # Prove it works before claiming it does

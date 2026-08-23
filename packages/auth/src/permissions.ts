@@ -60,12 +60,34 @@ export const PERMISSIONS = {
   DRIVERS_READ: 'drivers.read',
   DRIVERS_MANAGE: 'drivers.manage',
 
-  // --- driver self-service (held by a DRIVER session) ----------------------
+  /**
+   * Driver self-service (held by a DRIVER session).
+   *
+   * There is deliberately no `driver.trip.pause`. A driver can start a trip and end a trip;
+   * they cannot suspend the recording of one that is running. Pausing was the one control on
+   * the driver's screen that let the vehicle keep moving while the record stopped — a hundred
+   * kilometres of fuel with nothing to attribute it to. Standing still is already visible
+   * without any button: it shows up as a stop on the route.
+   */
   DRIVER_PORTAL_ACCESS: 'driver.portal.access',
   DRIVER_TRIP_START: 'driver.trip.start',
-  DRIVER_TRIP_PAUSE: 'driver.trip.pause',
   DRIVER_TRIP_STOP: 'driver.trip.stop',
-  DRIVER_LOCATION_SUBMIT: 'driver.location.submit',
+  /*
+   * There is no `driver.location.submit`.
+   *
+   * It named a trip-scoped upload endpoint that no longer exists. Keeping a permission no route
+   * checks would be worse than useless: a permission is a claim about what an actor may do, and
+   * one nothing enforces is a claim that is not true. Reporting location is `tracking.submit`,
+   * below, and it is held by workers and drivers alike because there is one stream.
+   */
+  /**
+   * Reporting location into an open tracking session.
+   *
+   * Held by workers *and* drivers, because Option C is one stream: the same phone reports for
+   * the working day and, when its owner is driving, for the trip inside it. Separate permissions
+   * per context would have been separate pipelines wearing a permission's clothes.
+   */
+  TRACKING_SUBMIT: 'tracking.submit',
   DRIVER_TRIP_HISTORY: 'driver.trip.history',
   DRIVER_VEHICLE_VIEW: 'driver.vehicle.view',
 

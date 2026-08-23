@@ -32,7 +32,13 @@ export type TrackingEventType =
   | 'PERMISSION_DISABLED'
   | 'DEVICE_OFFLINE'
   | 'APP_NOT_REPORTING'
-  | 'REPORTING_RECOVERED';
+  | 'REPORTING_RECOVERED'
+  /** Crossed into a geofence, confirmed after the debounce period. */
+  | 'GEOFENCE_ENTER'
+  /** Crossed out of one, past the hysteresis band. */
+  | 'GEOFENCE_EXIT'
+  /** A sustained stretch above the organization's configured limit. One event per stretch. */
+  | 'SPEED_EXCEEDED';
 
 /**
  * Neutral message keys. The client looks up the localized string; no wording here accuses
@@ -49,6 +55,9 @@ export const TRACKING_EVENT_MESSAGE_KEYS: Readonly<Record<TrackingEventType, str
   DEVICE_OFFLINE: 'tracking.event.device_offline',
   APP_NOT_REPORTING: 'tracking.event.app_not_reporting',
   REPORTING_RECOVERED: 'tracking.event.reporting_recovered',
+  GEOFENCE_ENTER: 'tracking.event.geofence_enter',
+  GEOFENCE_EXIT: 'tracking.event.geofence_exit',
+  SPEED_EXCEEDED: 'tracking.event.speed_exceeded',
 };
 
 export interface TrackingThresholds {
