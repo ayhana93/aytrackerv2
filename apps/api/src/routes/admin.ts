@@ -6,8 +6,10 @@ import { ConflictError, NotFoundError, ValidationError } from '@aytracker/domain
 import {
   DEFAULT_STOP_OPTIONS,
   HaversineRoutingProvider,
+  deriveTrackingState,
   detectStops,
   findTrackingGaps,
+  type TrackingState,
 } from '@aytracker/tracking';
 import type { OrganizationId } from '@aytracker/types';
 import {
@@ -16,7 +18,9 @@ import {
   createVehicleSchema,
   createWorkAreaSchema,
   createWorkerSchema,
+  rangeOnlyQuerySchema,
   selectLogoSchema,
+  tripListQuerySchema,
   updateGeofenceSchema,
   updateMemberEmailSchema,
   updateOperationalSettingsSchema,
@@ -25,6 +29,7 @@ import {
   updateWorkAreaSchema,
   updateWorkerSchema,
   uploadLogoSchema,
+  workHistoryQuerySchema,
 } from '@aytracker/validation';
 import { displayName, logoAssetUrl } from '../lib/branding.js';
 import { MAX_LOGO_BYTES, decodeBase64Image, sniffImageType } from '../lib/image.js';
@@ -126,21 +131,63 @@ function definedOnly<T extends Record<string, unknown>>(body: T): Partial<T> {
   ) as Partial<T>;
 }
 
+/**
+ * The window a report covers, from an already-validated query.
+ *
+ * It takes `Date`s rather than strings on purpose: whether the caller's input was a date at all
+ * is a validation question, answered by the schema at the route with a 400. This function only
+ * decides what an *absent* bound means and how wide a window is allowed to be — neither of which
+ * is an error, and both of which are echoed back in the response as `range`.
+ *
+ * A range wider than the cap is narrowed rather than refused. `from` moves forward to the cap;
+ * `to` is what the caller asked for, so "the last year" answers about the most recent 92 days
+ * rather than the oldest.
+ */
 function resolveRange(
-  query: { from?: string; to?: string },
+  query: { from?: Date; to?: Date },
   now: Date,
   defaultSpanMs: number = ONE_DAY_MS,
 ): { from: Date; to: Date } {
-  const to = query.to ? new Date(query.to) : now;
-  const from = query.from ? new Date(query.from) : new Date(to.getTime() - defaultSpanMs);
-
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-    return { from: new Date(now.getTime() - defaultSpanMs), to: now };
-  }
+  const to = query.to ?? now;
+  const from = query.from ?? new Date(to.getTime() - defaultSpanMs);
 
   const span = to.getTime() - from.getTime();
   const max = MAX_RANGE_DAYS * ONE_DAY_MS;
   return { from: span > max ? new Date(to.getTime() - max) : from, to };
+}
+
+/**
+ * What an open tracking session's state actually is, right now.
+ *
+ * `tracking_sessions.trackingState` is written by ingestion, so it only ever changes when a point
+ * arrives — and the one case that matters most is the case where none does. A device that stops
+ * reporting leaves the column frozen at ACTIVE, and every screen that reads it then asserts the
+ * phone is fine for as long as the session stays open. `detectInterruptions` exists to age these
+ * rows and nothing schedules it yet, so the read derives the state from the same observable facts
+ * the sweep would have used: how long since the last fix, how accurate it was, and what the device
+ * last said about itself.
+ *
+ * `deviceReported` is deliberately null. The column records what the device said when it last
+ * managed to say something; replaying "OFFLINE" from an hour ago would present a stale claim as a
+ * current one, and silence is already the thing being measured.
+ */
+function observedState(
+  session: {
+    lastPointAt: Date | null;
+    lastAccuracyMeters: { toString(): string } | null;
+  },
+  now: Date,
+): TrackingState {
+  return deriveTrackingState({
+    // An open session is the tracking equivalent of an active trip: it is running, and what is in
+    // question is whether anything is arriving through it.
+    tripStatus: 'ACTIVE',
+    lastPointAt: session.lastPointAt,
+    lastPointAccuracyMeters:
+      session.lastAccuracyMeters === null ? null : Number(session.lastAccuracyMeters),
+    deviceReported: null,
+    now,
+  });
 }
 
 /**
@@ -178,9 +225,19 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       assertPermission(actor, PERMISSIONS.REPORTS_READ);
       const organizationId = actor.organizationId;
       const now = services.clock.now();
-      const { from, to } = resolveRange(request.query as { from?: string; to?: string }, now);
+      const { from, to } = resolveRange(rangeOnlyQuerySchema.parse(request.query ?? {}), now);
 
-      const [openSessions, production, trips, warnings] = await Promise.all([
+      /**
+       * Every figure here is aggregated by PostgreSQL.
+       *
+       * It used to read the range's production entries and trips row by row and reduce them in
+       * Node — four sums, a count, an hourly bucketing and a group-by, over a window the caller
+       * may set to 92 days. On a factory recording a few thousand entries a day that is hundreds
+       * of thousands of rows, each with a joined position and work area, pulled across the wire
+       * so the process could add up two columns. The database does that work in the index this
+       * table already has on (organizationId, recordedAt), and returns one row per hour.
+       */
+      const [openSessions, hourly, byWorkArea, trips, warnings] = await Promise.all([
         services.prisma.positionSession.findMany({
           where: { organizationId, endedAt: null },
           select: {
@@ -193,27 +250,20 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
           orderBy: { startedAt: 'asc' },
           take: 200,
         }),
-        services.prisma.productionEntry.findMany({
-          where: { organizationId, recordedAt: { gte: from, lte: to } },
-          select: {
-            recordedAt: true,
-            goodQuantity: true,
-            defectQuantity: true,
-            position: { select: { name: true, workArea: { select: { name: true } } } },
-          },
-        }),
-        services.prisma.driverTrip.findMany({
+        productionByHour(services, organizationId, from, to),
+        productionByWorkArea(services, organizationId, from, to),
+        services.prisma.driverTrip.aggregate({
           where: { organizationId, startedAt: { gte: from, lte: to } },
-          select: { distanceMeters: true, durationSeconds: true, untrackedSeconds: true },
+          _count: { _all: true },
+          _sum: { distanceMeters: true, untrackedSeconds: true },
         }),
         collectWarnings(services, organizationId, now),
       ]);
 
-      // Decimal in the database because a "unit" can be a metre of extrusion. Summed as a
-      // number here only after the query, and rounded once at the end rather than per row.
-      const totalGood = production.reduce((sum, entry) => sum + Number(entry.goodQuantity), 0);
-      const totalScrap = production.reduce((sum, entry) => sum + Number(entry.defectQuantity), 0);
-      const distanceMeters = trips.reduce((sum, trip) => sum + trip.distanceMeters, 0);
+      // Summed from the hourly series rather than by a third query: every entry in the range
+      // falls in one of those buckets, so the two cannot disagree the way two queries could.
+      const totalGood = hourly.reduce((sum, bucket) => sum + bucket.good, 0);
+      const totalScrap = hourly.reduce((sum, bucket) => sum + bucket.scrap, 0);
 
       return {
         range: { from: from.toISOString(), to: to.toISOString() },
@@ -221,14 +271,14 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
           producedGood: Math.round(totalGood),
           producedScrap: Math.round(totalScrap),
           activeWorkers: new Set(openSessions.map((s) => s.id)).size,
-          trips: trips.length,
-          distanceMeters,
+          trips: trips._count._all,
+          distanceMeters: trips._sum.distanceMeters ?? 0,
           // Reported rather than hidden. A shift with tracking holes is a shift whose distance
           // is a floor, and the person reading the dashboard should know that.
-          untrackedSeconds: trips.reduce((sum, trip) => sum + trip.untrackedSeconds, 0),
+          untrackedSeconds: trips._sum.untrackedSeconds ?? 0,
         },
-        hourly: bucketByHour(production, from, to),
-        byWorkArea: groupByWorkArea(production),
+        hourly: zeroFillHours(hourly, from, to),
+        byWorkArea,
         activePositions: openSessions.map((session) => ({
           id: session.id,
           worker: `${session.worker.firstName} ${session.worker.lastName}`,
@@ -259,13 +309,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       const organizationId = actor.organizationId;
       const now = services.clock.now();
 
-      const query = request.query as {
-        from?: string;
-        to?: string;
-        workerId?: string;
-        workAreaId?: string;
-        limit?: string;
-      };
+      const query = workHistoryQuerySchema.parse(request.query ?? {});
       // A week rather than the dashboard's day: "who worked where" is a question asked about a
       // period that has finished, not about right now.
       const { from, to } = resolveRange(query, now, 7 * 24 * 60 * 60 * 1000);
@@ -292,42 +336,79 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
           },
         },
         orderBy: { startedAt: 'desc' },
-        take: Math.min(Number(query.limit ?? 250), 1000),
+        take: query.limit,
       });
 
       /**
-       * The roll-up runs over every matching row, not the page above.
+       * The roll-up runs over every matching row, not the page above — this is the figure people
+       * hold next to a payslip, and a client summing the page it happened to receive would report
+       * a smaller total than the truth the moment an organization crosses the cap.
        *
-       * A second query rather than reusing `sessions`, because `take` caps that one. Selected
-       * narrowly — four columns and no joins — so the wide read stays the capped one.
+       * "Every matching row" used to mean reading every matching row: a second, uncapped
+       * `findMany` over a window the caller may set to 92 days. The three reads below say the
+       * same thing without that:
+       *
+       *   * closed sessions are summed by the database, one row per worker;
+       *   * open ones are read individually, because their duration is "so far" and only the
+       *     server's clock knows it — and there are at most as many as there are people, which
+       *     the `position_sessions_one_open_per_worker` index makes a guarantee rather than an
+       *     assumption;
+       *   * the count is what decides whether the page above was truncated.
+       *
+       * `durationSeconds` is written on every close and every correction, so a row with an end
+       * time always has one. Splitting on `endedAt` therefore partitions the rows exactly, and
+       * the total is the same figure the row-by-row version produced.
        */
-      const allForTotals = await services.prisma.positionSession.findMany({
-        where,
-        select: {
-          startedAt: true,
-          endedAt: true,
-          durationSeconds: true,
-          workerId: true,
-          worker: { select: { firstName: true, lastName: true } },
-        },
-      });
+      const [closedTotals, openSessions, matchingCount] = await Promise.all([
+        services.prisma.positionSession.groupBy({
+          by: ['workerId'],
+          where: { ...where, endedAt: { not: null } },
+          _sum: { durationSeconds: true },
+          _count: { _all: true },
+        }),
+        services.prisma.positionSession.findMany({
+          where: { ...where, endedAt: null },
+          select: { workerId: true, startedAt: true, endedAt: true, durationSeconds: true },
+        }),
+        services.prisma.positionSession.count({ where }),
+      ]);
 
       const totals = new Map<
         string,
         { workerId: string; worker: string; seconds: number; sessions: number; open: boolean }
       >();
-      for (const row of allForTotals) {
-        const entry = totals.get(row.workerId) ?? {
-          workerId: row.workerId,
-          worker: `${row.worker.firstName} ${row.worker.lastName}`,
+      const touch = (workerId: string) => {
+        const entry = totals.get(workerId) ?? {
+          workerId,
+          worker: '',
           seconds: 0,
           sessions: 0,
           open: false,
         };
-        entry.seconds += elapsedSeconds(row, now);
+        totals.set(workerId, entry);
+        return entry;
+      };
+
+      for (const row of closedTotals) {
+        const entry = touch(row.workerId);
+        entry.seconds += row._sum.durationSeconds ?? 0;
+        entry.sessions += row._count._all;
+      }
+      for (const session of openSessions) {
+        const entry = touch(session.workerId);
+        entry.seconds += elapsedSeconds(session, now);
         entry.sessions += 1;
-        if (row.endedAt === null) entry.open = true;
-        totals.set(row.workerId, entry);
+        entry.open = true;
+      }
+
+      // Names for the roll-up, in one read keyed on the workers who actually appear in it.
+      const named = await services.prisma.worker.findMany({
+        where: { organizationId, id: { in: [...totals.keys()] } },
+        select: { id: true, firstName: true, lastName: true },
+      });
+      for (const worker of named) {
+        const entry = totals.get(worker.id);
+        if (entry) entry.worker = `${worker.firstName} ${worker.lastName}`;
       }
 
       return {
@@ -352,7 +433,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         })),
         byWorker: [...totals.values()].sort((a, b) => b.seconds - a.seconds),
         /** True when the list was capped, so the screen can say so rather than imply completeness. */
-        truncated: sessions.length < allForTotals.length,
+        truncated: sessions.length < matchingCount,
       };
     });
 
@@ -584,6 +665,35 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         return updated;
       });
 
+      /**
+       * Deactivating someone, or changing their credential, ends the sessions they already hold.
+       *
+       * Permissions are snapshotted onto the session row so authorization is one indexed read —
+       * and the price of that, stated in ADR 0005, is that anything which changes what a person
+       * may do has to revoke their sessions explicitly. Nothing did. A worker marked INACTIVE
+       * kept a fully valid session for the rest of its 16-hour life: they could still clock in,
+       * move between positions and stream their location, because the request path reads the
+       * snapshot and never re-reads the worker's status. The same held for a PIN reset — the old
+       * PIN stopped working, and the phone that was already signed in carried on regardless,
+       * which is the case where the reset was the point.
+       *
+       * Deliberately outside the transaction above and awaited before responding: the write that
+       * matters is the status change, and an admin must not be told "deactivated" until the
+       * sessions are actually gone. A driver profile shares the person, so it shares the sweep.
+       */
+      const deactivated = body.status !== undefined && body.status !== 'ACTIVE';
+      const credentialChanged = pinHash !== undefined;
+      if (deactivated || credentialChanged) {
+        const reason = deactivated ? 'worker.deactivated' : 'worker.pin_reset';
+        await services.sessions.revokeForActor({ workerId }, reason, now);
+        for (const driver of await services.prisma.driver.findMany({
+          where: { organizationId, workerId },
+          select: { id: true },
+        })) {
+          await services.sessions.revokeForActor({ driverId: driver.id }, reason, now);
+        }
+      }
+
       return {
         worker: {
           id: worker.id,
@@ -594,6 +704,12 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
           hasPin: worker.pinHash !== null,
           lockedUntil: null,
         },
+        /**
+         * True when this change signed the person out of the devices they were using. The screen
+         * has to be able to say so: an admin resetting a PIN mid-shift has just stopped that
+         * worker's phone reporting until they sign in again with the new one.
+         */
+        sessionsRevoked: deactivated || credentialChanged,
       };
     });
 
@@ -765,7 +881,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
     app.get('/trips', async (request) => {
       const actor = app.requireAuth(request);
       assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
-      const query = request.query as { from?: string; to?: string; limit?: string };
+      const query = tripListQuerySchema.parse(request.query ?? {});
       const { from, to } = resolveRange(query, services.clock.now());
 
       const trips = await services.prisma.driverTrip.findMany({
@@ -784,7 +900,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
           vehicle: { select: { registrationNumber: true } },
         },
         orderBy: { startedAt: 'desc' },
-        take: Math.min(Number(query.limit ?? 100), 500),
+        take: query.limit,
       });
 
       return {
@@ -907,7 +1023,12 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
             distanceMeters: route.distanceMeters,
             /** Draw a break after each of these indices rather than a straight line. */
             gapAfterIndices: route.gapAfterIndices,
-            pointCount: points.length,
+            /**
+             * How many vertices the line has — not how many rows the table holds. The screen
+             * prints this beside the map, and a count that included fixes too inaccurate to be
+             * drawn would claim more evidence than the picture shows.
+             */
+            pointCount: route.points.length,
           },
           /**
            * Where the vehicle stood still for twenty minutes or more.
@@ -1675,7 +1796,16 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
         }),
         services.prisma.trackingSession.findMany({
           where: { organizationId, endedAt: null },
-          select: { context: true, trackingState: true, tripId: true, workerId: true },
+          // `lastPointAt` and `lastAccuracyMeters` rather than the stored `trackingState`: that
+          // column is only written when a point arrives, so a device that went quiet at lunch
+          // would still be counted in the green number all afternoon. See `observedState`.
+          select: {
+            context: true,
+            lastPointAt: true,
+            lastAccuracyMeters: true,
+            tripId: true,
+            workerId: true,
+          },
           take: 1000,
         }),
       ]);
@@ -1689,9 +1819,10 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       });
 
       /** Reporting means a fix arrived recently enough to be current. The rest are silent. */
-      const reporting = sessions.filter(
-        (session) => session.trackingState === 'ACTIVE' || session.trackingState === 'DEGRADED',
-      ).length;
+      const reporting = sessions.filter((session) => {
+        const state = observedState(session, now);
+        return state === 'ACTIVE' || state === 'DEGRADED';
+      }).length;
 
       return {
         serverTime: now.toISOString(),
@@ -1838,8 +1969,15 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
              * The state as the server observes it, never as an accusation. A silent phone is
              * INTERRUPTED — which covers a tunnel, a flat battery and a force-quit equally,
              * because from here they are the same thing.
+             *
+             * Derived here against the clock rather than read off the column. The stored value is
+             * only ever written by an ingest, so a phone that stops reporting leaves it frozen at
+             * whatever it last was: the map showed a green dot for a device that died at lunch,
+             * which is worse than showing nothing because somebody believes it. The scheduled
+             * sweep that was meant to age these rows has no scheduler yet — see
+             * docs/production-audit.md — and a map that tells the truth must not wait for one.
              */
-            trackingState: session.trackingState,
+            trackingState: observedState(session, now),
             lastPointAt: session.lastPointAt?.toISOString() ?? null,
             secondsSinceFix,
             latitude: session.lastLatitude === null ? null : Number(session.lastLatitude),
@@ -2194,7 +2332,7 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       assertPermission(actor, PERMISSIONS.FLEET_TRACKING_READ);
       const { geofenceId } = request.params as { geofenceId: string };
       const now = services.clock.now();
-      const { from, to } = resolveRange(request.query as { from?: string; to?: string }, now);
+      const { from, to } = resolveRange(rangeOnlyQuerySchema.parse(request.query ?? {}), now);
 
       const visits = await services.prisma.geofenceVisit.findMany({
         where: {
@@ -2450,49 +2588,116 @@ async function collectWarnings(
   ];
 }
 
-/** Production per hour across the range, zero-filled so the chart has no missing columns. */
-function bucketByHour(
-  entries: readonly { recordedAt: Date; goodQuantity: unknown; defectQuantity: unknown }[],
+interface HourBucket {
+  readonly hour: string;
+  readonly good: number;
+  readonly scrap: number;
+}
+
+/**
+ * Production per hour, grouped by PostgreSQL.
+ *
+ * Raw SQL rather than `groupBy`, for one reason Prisma cannot express: the grouping key is
+ * `date_trunc('hour', …)`, not a column. Written in one tagged template, so the tenant and the
+ * range are bound parameters and cannot be concatenated into SQL text.
+ *
+ * `AT TIME ZONE 'UTC'` and `to_char` rather than returning a timestamp: `date_trunc` is evaluated
+ * in the *session's* time zone, so without it the chart's columns would shift whenever the
+ * database server's default changed, and the buckets would stop lining up with the ISO strings
+ * the zero-fill produces. The string built here is exactly what `Date.toISOString()` returns.
+ */
+async function productionByHour(
+  services: AppServices,
+  organizationId: OrganizationId,
   from: Date,
   to: Date,
-): readonly { hour: string; good: number; scrap: number }[] {
-  const buckets = new Map<string, { good: number; scrap: number }>();
+): Promise<readonly HourBucket[]> {
+  const rows = await services.prisma.$queryRaw<
+    { hour: string; good: number; scrap: number }[]
+  >`SELECT to_char(
+             date_trunc('hour', "recordedAt" AT TIME ZONE 'UTC'),
+             'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+           )                                AS hour,
+           SUM("goodQuantity")::float8      AS good,
+           SUM("defectQuantity")::float8    AS scrap
+      FROM "production_entries"
+     WHERE "organizationId" = ${organizationId}
+       AND "recordedAt" >= ${from}
+       AND "recordedAt" <= ${to}
+     GROUP BY 1
+     ORDER BY 1`;
 
-  const cursor = new Date(from);
-  cursor.setMinutes(0, 0, 0);
-  while (cursor <= to) {
-    buckets.set(cursor.toISOString(), { good: 0, scrap: 0 });
-    cursor.setHours(cursor.getHours() + 1);
-  }
-
-  for (const entry of entries) {
-    const key = new Date(entry.recordedAt);
-    key.setMinutes(0, 0, 0);
-    const bucket = buckets.get(key.toISOString());
-    if (!bucket) continue;
-    bucket.good += Number(entry.goodQuantity);
-    bucket.scrap += Number(entry.defectQuantity);
-  }
-
-  return [...buckets.entries()].map(([hour, value]) => ({
-    hour,
-    good: Math.round(value.good),
-    scrap: Math.round(value.scrap),
+  return rows.map((row) => ({
+    hour: row.hour,
+    good: Number(row.good),
+    scrap: Number(row.scrap),
   }));
 }
 
-function groupByWorkArea(
-  entries: readonly {
-    goodQuantity: unknown;
-    position: { name: string; workArea: { name: string } | null };
-  }[],
-): readonly { name: string; produced: number }[] {
-  const totals = new Map<string, number>();
-  for (const entry of entries) {
-    const name = entry.position.workArea?.name ?? '—';
-    totals.set(name, (totals.get(name) ?? 0) + Number(entry.goodQuantity));
+/**
+ * Production per work area, grouped by PostgreSQL.
+ *
+ * The tenant is repeated on the joins as well as the filter. The composite foreign keys already
+ * make a cross-tenant position unrepresentable, so this cannot change the result — it is here
+ * because a hand-written join is the one place in this file where that guarantee is not being
+ * applied by the query builder, and an unscoped join is how it would be lost.
+ */
+async function productionByWorkArea(
+  services: AppServices,
+  organizationId: OrganizationId,
+  from: Date,
+  to: Date,
+): Promise<readonly { name: string; produced: number }[]> {
+  const rows = await services.prisma.$queryRaw<
+    { name: string; produced: number }[]
+  >`SELECT COALESCE(area."name", '—')      AS name,
+           SUM(entry."goodQuantity")::float8 AS produced
+      FROM "production_entries" entry
+      JOIN "positions" position
+        ON position."id" = entry."positionId"
+       AND position."organizationId" = entry."organizationId"
+      LEFT JOIN "work_areas" area
+        ON area."id" = position."workAreaId"
+       AND area."organizationId" = entry."organizationId"
+     WHERE entry."organizationId" = ${organizationId}
+       AND entry."recordedAt" >= ${from}
+       AND entry."recordedAt" <= ${to}
+     GROUP BY 1
+     ORDER BY 2 DESC`;
+
+  return rows.map((row) => ({ name: row.name, produced: Math.round(Number(row.produced)) }));
+}
+
+/**
+ * Fills in the hours nothing was produced, so the chart has no missing columns.
+ *
+ * An hour with no rows and an hour with zero output look the same to a reader, and a chart that
+ * simply omits the quiet hours compresses the night shift into the day one.
+ *
+ * UTC throughout, deliberately: these keys have to match the ones the SQL produced, and a bucket
+ * boundary that moved with the API process's `TZ` would put the same entry in different hours on
+ * two machines serving the same organization.
+ */
+function zeroFillHours(
+  buckets: readonly HourBucket[],
+  from: Date,
+  to: Date,
+): readonly HourBucket[] {
+  const found = new Map(buckets.map((bucket) => [bucket.hour, bucket]));
+  const filled: HourBucket[] = [];
+
+  const cursor = new Date(from);
+  cursor.setUTCMinutes(0, 0, 0);
+  while (cursor <= to) {
+    const hour = cursor.toISOString();
+    const bucket = found.get(hour);
+    filled.push({
+      hour,
+      good: Math.round(bucket?.good ?? 0),
+      scrap: Math.round(bucket?.scrap ?? 0),
+    });
+    cursor.setUTCHours(cursor.getUTCHours() + 1);
   }
-  return [...totals.entries()]
-    .map(([name, produced]) => ({ name, produced: Math.round(produced) }))
-    .sort((a, b) => b.produced - a.produced);
+
+  return filled;
 }

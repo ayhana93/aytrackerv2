@@ -1,5 +1,5 @@
 import type { GeoPoint } from '@aytracker/types';
-import { computeTrackDistance, type TrackPoint } from './geo.js';
+import { computeTrackDistance, usableTrackPoints, type TrackPoint } from './geo.js';
 
 /**
  * RoutingProvider — the seam between the tracking domain and any map/routing vendor.
@@ -17,10 +17,15 @@ export interface RouteSegment {
 }
 
 export interface ReconstructedRoute {
+  /**
+   * The vertices the line is drawn through — the fixes the distance was actually integrated
+   * from, not every row in the table. A point too inaccurate to place the subject anywhere is
+   * not a place they went, and is left out of both.
+   */
   readonly points: readonly GeoPoint[];
-  readonly distanceMeters: number;
   /** Indices in `points` after which a tracking gap occurs — rendered as a break in the line. */
   readonly gapAfterIndices: readonly number[];
+  readonly distanceMeters: number;
 }
 
 export interface PlaceLabel {
@@ -47,26 +52,34 @@ export class HaversineRoutingProvider implements RoutingProvider {
 
   constructor(private readonly maxGapSeconds = 300) {}
 
+  /**
+   * The drawn line and the reported distance come from the same walk over the same points.
+   *
+   * They used to come from two: distance from the filtered sequence, the polyline from every
+   * stored row, and the breaks from the raw timeline. That is three ways to disagree, and all
+   * three showed up on the same screen. A stretch where the phone reported nothing but 2 km
+   * cell-tower fixes has no silence in the raw timeline, so the line was drawn straight across
+   * minutes the integrator had already refused to count — the exact fabrication
+   * `gapAfterIndices` exists to prevent — and each of those fixes was drawn as a place the
+   * vehicle had been.
+   *
+   * So: filter once, integrate once, and break the line wherever the integration refused to
+   * bridge. What the map shows is now what the distance is made of.
+   */
   async reconstruct(points: readonly TrackPoint[]): Promise<ReconstructedRoute> {
-    const ordered = [...points].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-    const result = computeTrackDistance(ordered, {
+    const options = {
       maxAccuracyMeters: 100,
       maxSpeedMps: 60,
       minSegmentMeters: 10,
       maxGapSeconds: this.maxGapSeconds,
-    });
-
-    const gapAfterIndices: number[] = [];
-    for (let i = 1; i < ordered.length; i += 1) {
-      const elapsed =
-        (ordered[i]!.timestamp.getTime() - ordered[i - 1]!.timestamp.getTime()) / 1000;
-      if (elapsed > this.maxGapSeconds) gapAfterIndices.push(i - 1);
-    }
+    };
+    const usable = usableTrackPoints(points, options);
+    const result = computeTrackDistance(usable, options);
 
     return {
-      points: ordered.map((point) => ({ latitude: point.latitude, longitude: point.longitude })),
+      points: usable.map((point) => ({ latitude: point.latitude, longitude: point.longitude })),
+      gapAfterIndices: result.breakAfterIndices,
       distanceMeters: result.distanceMeters,
-      gapAfterIndices,
     };
   }
 }

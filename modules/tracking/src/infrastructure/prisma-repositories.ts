@@ -245,6 +245,17 @@ export class PrismaLocationPointRepository implements LocationPointRepository {
         source: point.source ?? 'GPS',
         isBackfilled: point.isBackfilled,
       })),
+      /**
+       * A point already stored for this session at this instant is the same point.
+       *
+       * The device queue drops a point only once the server acknowledges it, so a response lost
+       * to a dropped connection leaves the batch queued and it arrives again — and every point in
+       * it is then at or before the newest stored one, which routes it through the offline-replay
+       * bucket that is thinned only against itself. Skipping is the right answer rather than
+       * failing: the driver's connection is already bad, and refusing their upload for being a
+       * retry would lose the points that genuinely are new in the same batch.
+       */
+      skipDuplicates: true,
     });
     return result.count;
   }

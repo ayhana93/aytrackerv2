@@ -13,6 +13,7 @@ import {
   eventForTransition,
   findTrackingGaps,
   haversineMeters,
+  HaversineRoutingProvider,
   toLitersPer100Km,
   totalGapSeconds,
   type TrackPoint,
@@ -107,6 +108,111 @@ describe('computeTrackDistance', () => {
     const ordered = computeTrackDistance([point(0, 42.7, 23.32), point(60, 42.71, 23.32)]);
     const shuffled = computeTrackDistance([point(60, 42.71, 23.32), point(0, 42.7, 23.32)]);
     expect(shuffled.distanceMeters).toBe(ordered.distanceMeters);
+  });
+
+  /**
+   * A rejected point in the middle of two good ones does not turn its neighbours into a gap.
+   *
+   * A → B(rejected) → C, with A and C two minutes apart, is the same evidence as A → C with no B
+   * at all: two credible fixes, two minutes apart, inside the bridging window. Refusing to
+   * connect them would throw away distance the record does support.
+   */
+  it('still connects two good fixes across one rejected point', () => {
+    const result = computeTrackDistance([
+      point(0, 42.7, 23.32, 10),
+      point(60, 43.5, 23.32, 5000),
+      point(120, 42.71, 23.32, 10),
+    ]);
+    expect(result.breakAfterIndices).toEqual([]);
+    expect(result.bridgedGaps).toBe(0);
+    expect(result.distanceMeters).toBeGreaterThan(1000);
+  });
+
+  /**
+   * …but a *stretch* of rejected points is a hole, and is treated as one.
+   *
+   * A phone reporting nothing but 2 km cell-tower fixes for twenty minutes has told us nothing
+   * about where it was. The two credible fixes on either side are twenty minutes apart, which is
+   * past the bridging limit, so the distance between them is not counted and the line is broken.
+   */
+  it('reports a run of rejected points as a gap rather than bridging it', () => {
+    const result = computeTrackDistance([
+      point(0, 42.7, 23.32, 10),
+      ...Array.from({ length: 39 }, (_, index) => point((index + 1) * 30, 42.7, 23.32, 2000)),
+      point(1200, 42.9, 23.32, 10),
+    ]);
+    expect(result.rejectedPoints).toBe(39);
+    expect(result.bridgedGaps).toBe(1);
+    expect(result.gapSeconds).toBe(1200);
+    expect(result.distanceMeters).toBe(0);
+    // Index 0 of the *usable* sequence: the last credible fix before the silence.
+    expect(result.breakAfterIndices).toEqual([0]);
+  });
+
+  it('breaks the line where it refused a teleport', () => {
+    const result = computeTrackDistance([
+      point(0, 42.7, 23.32),
+      // 111 km in one second. Not counted, and not drawn either.
+      point(1, 43.7, 23.32),
+      point(31, 43.7001, 23.32),
+    ]);
+    expect(result.distanceMeters).toBeLessThan(50);
+    expect(result.breakAfterIndices).toEqual([0]);
+  });
+});
+
+/**
+ * The polyline the admin map draws.
+ *
+ * The distance and the line have to be made of the same points. When they were not, a screen
+ * could show a route running through a spot the vehicle was never at, with a distance beside it
+ * that excluded exactly that stretch.
+ */
+describe('HaversineRoutingProvider', () => {
+  const base = at('2026-03-10T08:00:00Z');
+  const point = (offsetSeconds: number, lat: number, lon: number, accuracy = 10): TrackPoint => ({
+    timestamp: new Date(base.getTime() + offsetSeconds * 1000),
+    latitude: lat,
+    longitude: lon,
+    accuracyMeters: accuracy,
+  });
+
+  it('does not draw a vertex at a fix too inaccurate to place the vehicle', async () => {
+    const route = await new HaversineRoutingProvider().reconstruct([
+      point(0, 42.7, 23.32, 10),
+      // A cell-tower fix 90 km away with a 5 km error radius. The distance integrator has always
+      // ignored it; the map used to draw a spike out to it and back.
+      point(60, 43.5, 23.32, 5000),
+      point(120, 42.71, 23.32, 10),
+    ]);
+
+    expect(route.points).toHaveLength(2);
+    expect(route.points.map((p) => p.latitude)).toEqual([42.7, 42.71]);
+  });
+
+  /** The rule from docs/tracking.md §5: route lines are not drawn across a gap. */
+  it('breaks the line across a hole that only exists after filtering', async () => {
+    const route = await new HaversineRoutingProvider().reconstruct([
+      point(0, 42.7, 23.32, 10),
+      // Twenty minutes of fixes that say "somewhere in this city".
+      ...Array.from({ length: 39 }, (_, index) => point((index + 1) * 30, 42.75, 23.35, 2000)),
+      point(1200, 42.9, 23.32, 10),
+    ]);
+
+    expect(route.points).toHaveLength(2);
+    expect(route.gapAfterIndices).toEqual([0]);
+    // The distance the map implies and the distance reported are the same claim.
+    expect(route.distanceMeters).toBe(0);
+  });
+
+  it('draws an unbroken line through an ordinary track', async () => {
+    const route = await new HaversineRoutingProvider().reconstruct(
+      Array.from({ length: 10 }, (_, index) => point(index * 30, 42.7 + index * 0.002, 23.32)),
+    );
+
+    expect(route.points).toHaveLength(10);
+    expect(route.gapAfterIndices).toEqual([]);
+    expect(route.distanceMeters).toBeGreaterThan(1500);
   });
 });
 

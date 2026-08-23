@@ -33,3 +33,9 @@ is a fabrication. The gap is reported as `untrackedSeconds` instead.
 - Distance is slightly below odometer readings. Documented so it is not read as a bug.
 - A test asserts 60 stationary jittery points integrate to exactly 0 — the behaviour is pinned.
 - Route rendering must handle discontinuities; `reconstruct()` returns `gapAfterIndices`.
+- **The filters bind the drawn route as well as the number.** `reconstruct()` used to integrate
+  the filtered sequence but return every stored row as a vertex, and derive the breaks from the
+  raw timeline — so a fix this ADR rejected was still drawn as a place the vehicle had been, and
+  a stretch of nothing but rejected fixes was drawn as an unbroken line across minutes the
+  distance excluded. One filtered walk now produces the points, the breaks and the distance
+  together. A renderer that reaches past `reconstruct()` to the raw rows reopens this.

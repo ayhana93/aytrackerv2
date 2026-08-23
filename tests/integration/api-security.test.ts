@@ -1090,6 +1090,65 @@ describe('work tracking, and a driver trip inside it', () => {
     expect(stored).toBe(flood.json().accepted);
   });
 
+  /**
+   * The same batch, sent twice, is stored once.
+   *
+   * This is the ordinary consequence of a bad connection, not an exotic case: the device queue
+   * drops a point only once the server has acknowledged it, so a response lost on the way back
+   * leaves the whole batch queued and it is sent again. Every point in it is then at or before
+   * the newest stored one, which routes it through the offline-replay bucket — and that bucket is
+   * thinned only against itself, deliberately, so a two-hour-old queued fix is not discarded for
+   * being older than the newest live one. Nothing else stood between the replay and a second copy
+   * of the afternoon.
+   *
+   * The arithmetic always survived this — two fixes at the same instant have no elapsed time
+   * between them, so distance, stops and gaps were never wrong — but the busiest table in the
+   * product grew in proportion to how poor a driver's signal was, which is exactly backwards.
+   */
+  it('stores a re-sent batch once, not twice', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+
+    const now = Date.now();
+    const batch = {
+      deviceReported: 'ONLINE' as const,
+      points: Array.from({ length: 4 }, (_, index) => ({
+        timestamp: new Date(now - (4 - index) * SAMPLE_SECONDS * 1000).toISOString(),
+        latitude: 42.6977 + index * 0.001,
+        longitude: 23.3219 + index * 0.001,
+        accuracyMeters: 8,
+        speedMps: 12,
+      })),
+    };
+    const send = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/tracking/points',
+        headers: { cookie: worker.cookies, 'x-csrf-token': worker.csrfToken },
+        // A fresh id each time: the collector generates one per attempt, and location batches are
+        // deliberately outside the idempotency ledger — an ledger row per batch would double the
+        // write volume of the busiest endpoint in the system.
+        payload: { clientActionId: randomUUID(), ...batch },
+      });
+
+    const first = await send();
+    const replay = await send();
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json().accepted).toBe(4);
+
+    // The retry succeeds — a driver on a poor connection must not have their upload refused for
+    // retrying — and reports honestly that it added nothing.
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().accepted).toBe(0);
+    expect(replay.json().duplicates).toBe(4);
+
+    const stored = await prisma.locationPoint.count({
+      where: { organizationId: tenant.organizationId, trackingSessionId },
+    });
+    expect(stored).toBe(4);
+  });
+
   it('keeps the same session when a trip starts inside the shift', async () => {
     const worker = await loginWorker();
     const { trackingSessionId } = await startShift(worker);
@@ -1488,6 +1547,61 @@ describe('work tracking, and a driver trip inside it', () => {
     // than folding them into "working" as though we could still see them.
     expect(counts).toHaveProperty('notReporting');
     expect(counts).toHaveProperty('untracked');
+  });
+
+  /**
+   * A phone that stopped reporting stops being green, without anything having to run.
+   *
+   * `tracking_sessions.trackingState` is written by ingestion, so it only ever changes when a
+   * point arrives — and the case that matters most is the one where none does. The sweep meant to
+   * age these rows has no scheduler, so the column sat at ACTIVE for as long as the session stayed
+   * open: the live map showed a green dot for a device that died at lunch, and the workforce count
+   * folded that person into "reporting". The read derives the state against the clock instead.
+   */
+  it('stops calling a silent phone ACTIVE, on the map and in the counts', async () => {
+    const worker = await loginWorker();
+    const { trackingSessionId } = await startShift(worker);
+    await postPoints(worker, 2);
+
+    const admin = await loginAdmin();
+    const fresh = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/live',
+      headers: { cookie: admin.cookies },
+    });
+    expect(fresh.json().subjects[0].trackingState).toBe('ACTIVE');
+
+    // The device goes quiet. Nothing else changes: the session is still open, the stored column
+    // still says ACTIVE, and no sweep runs.
+    await prisma.trackingSession.update({
+      where: { id: trackingSessionId },
+      data: { lastPointAt: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+    expect(
+      (
+        await prisma.trackingSession.findUniqueOrThrow({
+          where: { id: trackingSessionId },
+          select: { trackingState: true },
+        })
+      ).trackingState,
+    ).toBe('ACTIVE');
+
+    const stale = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/live',
+      headers: { cookie: admin.cookies },
+    });
+    expect(stale.json().subjects[0].trackingState).toBe('INTERRUPTED');
+
+    const workforce = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/workforce',
+      headers: { cookie: admin.cookies },
+    });
+    const counts = workforce.json().counts;
+    expect(counts.reporting).toBe(0);
+    // Still at work — the honest statement is that we cannot currently see where.
+    expect(counts.notReporting).toBeGreaterThanOrEqual(1);
   });
 
   /**

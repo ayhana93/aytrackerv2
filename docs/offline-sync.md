@@ -58,9 +58,25 @@ Keys expire after 48 hours — long enough for a weekend of queued actions.
 
 ### Where it is not applied
 
-Location batches are **not** wrapped. A batch is a set of points; appending the same point twice
-is prevented by the accepted-timestamp cursor, and writing an idempotency row per batch would
-double the write volume of the busiest endpoint in the system.
+Location batches are **not** wrapped. Writing an idempotency row per batch would double the write
+volume of the busiest endpoint in the system, and a batch does not need one: a point is identified
+by the instant it was taken, so a unique index on `location_points (organizationId,
+trackingSessionId, timestamp)` is what makes the endpoint idempotent, and `appendMany` skips
+against it rather than failing the upload.
+
+That index is the guarantee, and it had to become one. The claim here used to be that "the
+accepted-timestamp cursor" prevented a duplicate; it did not. The device queue drops a point only
+once the server has acknowledged it, so a response lost on the way back — the ordinary consequence
+of a bad connection — leaves the whole batch queued and it is sent again. Every point in it is
+then at or before the newest stored one, which routes it through the offline-replay bucket, and
+that bucket is thinned only against itself, deliberately, so a two-hour-old queued fix is not
+discarded for being older than the newest live one. Nothing stood between the replay and a second
+copy of the afternoon. The arithmetic survived it — two fixes at the same instant have no elapsed
+time between them, so distance, stops and gaps were never wrong — but the table grew in proportion
+to how poor a driver's signal was.
+
+The response reports `duplicates` alongside `accepted`, so a replay says plainly that it added
+nothing rather than claiming to have recorded the afternoon twice.
 
 ---
 
@@ -145,7 +161,7 @@ Server state wins. There is no merge.
 | Shift already started (another device) | `409 shift.already_active`; client adopts server state |
 | Position session already closed        | `409 position.session_already_closed`; refresh         |
 | Trip already ended                     | `409 trip.already_ended`; refresh                      |
-| Worker deactivated while offline       | Actions rejected; session revoked                      |
+| Worker deactivated while offline       | Session revoked at deactivation; the replay is refused |
 | Qualification revoked while offline    | Position change rejected on replay                     |
 
 A rejected action is surfaced to the user with its reason rather than dropped silently — a worker

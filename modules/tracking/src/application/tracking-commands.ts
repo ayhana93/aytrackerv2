@@ -321,6 +321,7 @@ export class TrackingCommandService {
     rejected: number;
     clamped: number;
     dropped: number;
+    duplicates: number;
     state: TrackingState;
     distanceMeters: number;
   }> {
@@ -374,13 +375,23 @@ export class TrackingCommandService {
       const keep = [...thinnedReplay.accepted, ...thinnedLive.accepted];
       const dropped = thinnedLive.dropped + thinnedReplay.dropped;
 
-      if (keep.length > 0) {
-        await uow.points.appendMany({
-          organizationId: input.organizationId,
-          trackingSessionId: open.id,
-          points: keep,
-        });
-      }
+      /**
+       * Stored, not merely kept.
+       *
+       * The unique index on (organization, session, instant) skips a point already held for that
+       * instant, which is what a re-sent batch is made of — so the count that comes back is the
+       * number of genuinely new fixes, and a replay honestly reports zero rather than claiming to
+       * have recorded the afternoon twice.
+       */
+      const stored =
+        keep.length > 0
+          ? await uow.points.appendMany({
+              organizationId: input.organizationId,
+              trackingSessionId: open.id,
+              points: keep,
+            })
+          : 0;
+      const duplicates = keep.length - stored;
 
       const allPoints = await uow.points.listForSession(input.organizationId, open.id);
       const distance = computeTrackDistance(allPoints);
@@ -494,10 +505,12 @@ export class TrackingCommandService {
       });
 
       return {
-        accepted: keep.length,
+        accepted: stored,
         rejected: batch.rejected,
         clamped: batch.clamped,
         dropped,
+        /** Already held for this session at this instant — a re-sent batch, not new evidence. */
+        duplicates,
         state,
         distanceMeters: distance.distanceMeters,
       };

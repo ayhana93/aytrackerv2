@@ -62,6 +62,40 @@ export interface DistanceResult {
   readonly bridgedGaps: number;
   readonly gapSeconds: number;
   readonly movingSeconds: number;
+  /**
+   * Indices into the **usable** sequence — `usableTrackPoints(points, options)` — after which
+   * the integrator refused to connect two fixes, because the silence was too long or the
+   * implied speed was impossible.
+   *
+   * It exists so a renderer can break the line in exactly the places the distance was not
+   * counted. Anything that draws a polyline from the raw rows instead will draw a straight line
+   * through metres this function declined to believe, and the picture will disagree with the
+   * number printed beside it.
+   */
+  readonly breakAfterIndices: readonly number[];
+}
+
+/**
+ * The points the integrator will actually walk: time-ordered, and accurate enough to place the
+ * subject anywhere in particular.
+ *
+ * Exported because the route renderer must draw *these* points and no others. A fix with a
+ * two-kilometre error radius is not evidence of a location, and a polyline that includes it puts
+ * a vertex — a spike out to a street the vehicle was never on — into a picture someone prints and
+ * puts in front of a driver.
+ */
+export function usableTrackPoints(
+  points: readonly TrackPoint[],
+  options: DistanceOptions = DEFAULT_DISTANCE_OPTIONS,
+): readonly TrackPoint[] {
+  return [...points]
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+    .filter(
+      (point) =>
+        point.accuracyMeters === undefined ||
+        point.accuracyMeters === null ||
+        point.accuracyMeters <= options.maxAccuracyMeters,
+    );
 }
 
 /**
@@ -75,34 +109,37 @@ export function computeTrackDistance(
   points: readonly TrackPoint[],
   options: DistanceOptions = DEFAULT_DISTANCE_OPTIONS,
 ): DistanceResult {
-  const ordered = [...points].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  const usable = ordered.filter(
-    (point) =>
-      point.accuracyMeters === undefined ||
-      point.accuracyMeters === null ||
-      point.accuracyMeters <= options.maxAccuracyMeters,
-  );
+  const usable = usableTrackPoints(points, options);
 
   let distance = 0;
   let bridgedGaps = 0;
   let gapSeconds = 0;
   let movingSeconds = 0;
+  const breakAfterIndices: number[] = [];
 
   for (let i = 1; i < usable.length; i += 1) {
     const previous = usable[i - 1]!;
     const current = usable[i]!;
     const elapsed = (current.timestamp.getTime() - previous.timestamp.getTime()) / 1000;
+    // Two fixes stamped at the same instant: a duplicate, or a replay of a batch already stored.
+    // Nothing travelled between them, and there is no line to break either.
     if (elapsed <= 0) continue;
 
     if (elapsed > options.maxGapSeconds) {
       bridgedGaps += 1;
       gapSeconds += elapsed;
+      breakAfterIndices.push(i - 1);
       continue;
     }
 
     const segment = haversineMeters(previous, current);
+    // Below the jitter floor: the same place twice, so the line stays whole.
     if (segment < options.minSegmentMeters) continue;
-    if (segment / elapsed > options.maxSpeedMps) continue;
+    if (segment / elapsed > options.maxSpeedMps) {
+      // A teleport. The distance is not counted, so the line must not be drawn either.
+      breakAfterIndices.push(i - 1);
+      continue;
+    }
 
     distance += segment;
     movingSeconds += elapsed;
@@ -111,10 +148,11 @@ export function computeTrackDistance(
   return {
     distanceMeters: Math.round(distance),
     acceptedPoints: usable.length,
-    rejectedPoints: ordered.length - usable.length,
+    rejectedPoints: points.length - usable.length,
     bridgedGaps,
     gapSeconds: Math.round(gapSeconds),
     movingSeconds: Math.round(movingSeconds),
+    breakAfterIndices,
   };
 }
 
