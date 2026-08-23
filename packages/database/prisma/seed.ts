@@ -294,11 +294,13 @@ async function seedSystemRoles(): Promise<void> {
  */
 function buildDemoTrack(
   organizationId: string,
+  trackingSessionId: string,
   tripId: string,
   startedAt: Date,
   endedAt: Date,
 ): {
   organizationId: string;
+  trackingSessionId: string;
   tripId: string;
   timestamp: Date;
   latitude: string;
@@ -343,6 +345,7 @@ function buildDemoTrack(
 
     points.push({
       organizationId,
+      trackingSessionId,
       tripId,
       timestamp: new Date(startedAt.getTime() + elapsed * 1000),
       latitude: (from[0] + (to[0] - from[0]) * withinSegment + jitter).toFixed(6),
@@ -890,10 +893,37 @@ async function seedDemoOrganization(): Promise<void> {
     },
   });
 
+  /**
+   * The session that authorised the device to report during this trip.
+   *
+   * Points and tracking events are owned by a session, not by a trip — that is the whole of the
+   * privacy rule, expressed as a NOT NULL foreign key: there is no row the schema can hold that
+   * represents location collected outside an authorised context. The seed has to build one for
+   * the same reason the application does.
+   *
+   * It did not, for a month. `trip_location_points` had been renamed and `trackingSessionId` had
+   * become required, and the demo seed went on writing the old shape — because it is run behind
+   * `SEED_DEMO=true` and nothing typechecked it. Both are fixed: `tsconfig.typecheck.json` now
+   * covers `prisma/`, and CI runs the demo path rather than only the platform one.
+   */
+  const trackingSession = await prisma.trackingSession.create({
+    data: {
+      organizationId: organization.id,
+      context: 'DRIVER_TRIP',
+      driverId: driver.id,
+      tripId: trip.id,
+      vehicleId: van.id,
+      startedAt: tripStart,
+      endedAt: tripEnd,
+      trackingState: 'STOPPED',
+    },
+  });
+
   await prisma.trackingEvent.createMany({
     data: [
       {
         organizationId: organization.id,
+        trackingSessionId: trackingSession.id,
         tripId: trip.id,
         type: 'TRACKING_STARTED',
         state: 'ACTIVE',
@@ -901,6 +931,7 @@ async function seedDemoOrganization(): Promise<void> {
       },
       {
         organizationId: organization.id,
+        trackingSessionId: trackingSession.id,
         tripId: trip.id,
         type: 'APP_NOT_REPORTING',
         state: 'INTERRUPTED',
@@ -910,6 +941,7 @@ async function seedDemoOrganization(): Promise<void> {
       },
       {
         organizationId: organization.id,
+        trackingSessionId: trackingSession.id,
         tripId: trip.id,
         type: 'REPORTING_RECOVERED',
         state: 'ACTIVE',
@@ -917,6 +949,7 @@ async function seedDemoOrganization(): Promise<void> {
       },
       {
         organizationId: organization.id,
+        trackingSessionId: trackingSession.id,
         tripId: trip.id,
         type: 'TRACKING_STOPPED',
         state: 'STOPPED',
@@ -925,8 +958,8 @@ async function seedDemoOrganization(): Promise<void> {
     ],
   });
 
-  const track = buildDemoTrack(organization.id, trip.id, tripStart, tripEnd);
-  await prisma.tripLocationPoint.createMany({ data: track });
+  const track = buildDemoTrack(organization.id, trackingSession.id, trip.id, tripStart, tripEnd);
+  await prisma.locationPoint.createMany({ data: track });
 
   /**
    * The summary is derived from the track, never typed in beside it.
@@ -949,6 +982,16 @@ async function seedDemoOrganization(): Promise<void> {
       distanceMeters: measured.distanceMeters,
       untrackedSeconds: measured.gapSeconds,
       endOdometer: (148_172 + measured.distanceMeters / 1000).toFixed(2),
+    },
+  });
+  // The session carries the same measurement, for the same reason: two numbers for one track
+  // that are allowed to disagree is the inconsistency this product exists to avoid.
+  await prisma.trackingSession.update({
+    where: { id: trackingSession.id },
+    data: {
+      distanceMeters: measured.distanceMeters,
+      untrackedSeconds: measured.gapSeconds,
+      lastPointAt: track.at(-1)?.timestamp ?? null,
     },
   });
 

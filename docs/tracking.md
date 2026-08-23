@@ -22,7 +22,9 @@ POST /api/v1/tracking/points          rate limited, entitlement-gated
    ├─ admitPoints                     session open? coordinates valid? timestamp inside the window?
    │                                  which trip was running at that instant?
    ├─ sampling floor                  thin anything faster than the configured minimum
-   ├─ appendMany                      createMany, one round trip
+   ├─ appendMany                      createMany, one round trip; a fix already held for this
+   │                                  session at this instant is skipped, so a re-sent batch
+   │                                  stores nothing twice
    ├─ computeTrackDistance            recomputed from all stored points
    ├─ deriveTrackingState             from observable facts only
    ├─ detectGeofenceVisits            recomputed; only new crossings produce events
@@ -101,6 +103,24 @@ ellipsoidal correction is far below GPS noise, and haversine has no convergence 
 Distance is **recomputed from all stored points at trip close**, not accumulated — so a trip that
 synced out of order still ends with the right number.
 
+### A rejected fix is a hole, not a shortcut
+
+A point dropped for poor accuracy leaves its neighbours adjacent, and they are then measured
+against each other by real wall-clock time. That is the right answer for one dropped fix — two
+credible points two minutes apart are the same evidence whether or not something unusable sat
+between them — and it is also the right answer for twenty minutes of them: the surviving fixes are
+twenty minutes apart, past the bridging limit, so nothing is counted and the gap is reported.
+
+**The drawn route is made of the same points as the distance.** It was not always: `reconstruct()`
+integrated the filtered sequence but returned every stored row as a vertex, and derived the line
+breaks from the raw timeline. Three walks over three different sequences, all rendered on one
+screen. A stretch where the phone reported nothing but 2 km cell-tower fixes has no silence in the
+raw timeline, so the map drew an unbroken line across minutes the integrator had already refused to
+count, through vertices at places the vehicle was never near — the fabrication `gapAfterIndices`
+exists to prevent, produced by the function that produces `gapAfterIndices`. It now filters once,
+integrates once, and breaks the line wherever the integration refused to bridge: a gap past the
+limit, or a segment implying an impossible speed.
+
 ---
 
 ## 4. Tracking states, and what they refuse to claim
@@ -176,9 +196,16 @@ Rules:
 `untrackedSeconds` is a first-class column on `DriverTrip`, not something buried in a log. A trip
 with 19 minutes missing is a different fact from a fully tracked one.
 
-A scheduled sweep (`detectInterruptions`) catches trips that have gone quiet — without it, a trip
-whose device died would sit at `ACTIVE` forever and the dashboard would show a driver as tracked
-when nothing is arriving.
+`detectInterruptions` exists to age open sessions that have gone quiet — and **nothing schedules
+it.** There is no cron, no worker process and no job runner in this deployment, so the sweep is a
+method with no caller and `tracking_sessions.trackingState` is only ever written by an ingest.
+
+Which means the column is frozen for exactly the device that stopped reporting. The live map and
+the workforce counts therefore **derive** the state from `lastPointAt` at read time rather than
+trusting the column, so a phone that died at lunch is INTERRUPTED on the screen from the moment it
+goes past the stale threshold. What is still missing without the sweep is the `TrackingEvent` row:
+the interruption shows on the map but does not appear in the session's event log until the device
+comes back and the next ingest records the transition. See docs/production-audit.md.
 
 ---
 
@@ -214,9 +241,16 @@ thing independently — a promise is worth more when the operating system enforc
 | Geofence visits            | With the session  | Arrival times feed customer reports             |
 | Audit records              | 7 years           | Legal                                           |
 
-Both windows are per-organization settings. Deleting raw points does **not** invalidate a
-year-old cost report, because the summary carries distance, duration and gaps. That separation is
-the whole reason the windows differ.
+Deleting raw points does **not** invalidate a year-old cost report, because the summary carries
+distance, duration and gaps. That separation is the whole reason the windows differ.
+
+**These are the intended windows, and nothing enforces them yet.** `deleteOlderThan` is written
+and tested at the repository level, but — like `detectInterruptions` — it has no scheduler to call
+it and no per-organization setting to read a window from. So raw GPS points are currently kept
+indefinitely. For a product whose central claim is that location is collected only inside
+authorised working time, an unbounded retention window is the gap in that promise that matters
+most, and it is the first thing a customer's data-protection review will ask about. Tracked as
+CRITICAL in docs/production-audit.md.
 
 Coordinates are stored at 6 decimal places (~0.11 m). More precision than the sensor provides is
 a privacy cost with no operational benefit.

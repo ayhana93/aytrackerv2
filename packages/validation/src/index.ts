@@ -12,3 +12,4 @@ export * from './shifts.js';
 export * from './drivers.js';
 export * from './fleet.js';
 export * from './platform.js';
+export * from './reporting.js';

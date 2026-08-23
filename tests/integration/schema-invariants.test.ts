@@ -260,6 +260,32 @@ describe('row level security', () => {
   });
 });
 
+describe('the location point stream', () => {
+  /**
+   * One fix per session per instant.
+   *
+   * Not a partial index and not a business rule about "open" anything — a plain uniqueness
+   * guarantee on the busiest table in the product. It is what stops a device queue re-sending a
+   * batch whose acknowledgement was lost from storing the afternoon twice, and `appendMany`
+   * skips against it rather than failing the driver's upload.
+   */
+  it('cannot hold two fixes for one session at one instant', async () => {
+    expect(await indexNames()).toContain('location_points_session_instant_key');
+  });
+
+  it('has not grown a second index of the same shape', async () => {
+    // The unique index replaced the plain one rather than joining it: two indexes on the same
+    // three columns would double the write cost of every ingested point and buy nothing.
+    const rows = await prisma.$queryRawUnsafe<{ indexname: string }[]>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'location_points'
+          AND indexdef LIKE '%"organizationId", "trackingSessionId", "timestamp"%'`,
+    );
+    expect(rows.map((row) => row.indexname)).toEqual(['location_points_session_instant_key']);
+  });
+});
+
 describe('the driving handoff schema', () => {
   it('allows exactly one trip per position session', async () => {
     // What makes closing a position session able to find and close the trip it owns.

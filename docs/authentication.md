@@ -72,12 +72,24 @@ instead of a role join per request.
 
 The cost is invalidation. `SessionService.revokeForActor` must be called when:
 
-- a member's role changes,
-- a role's permissions change,
-- a worker or driver is deactivated,
-- a membership is removed.
+| Event                             | Wired?                                                          |
+| --------------------------------- | --------------------------------------------------------------- |
+| A worker or driver is deactivated | Yes — `PATCH /admin/workers/:workerId`, worker and driver alike |
+| A worker's PIN is reset           | Yes — same route; a changed credential ends the old sessions    |
+| A member's role changes           | No route exists yet that changes one                            |
+| A role's permissions change       | No route exists yet that changes them                           |
+| A membership is removed           | No route exists yet that removes one                            |
 
-This is the tradeoff's sharp edge and it is reviewed on every change to roles or membership.
+This is the tradeoff's sharp edge, and it was open for a while: `revokeForActor` existed and
+nothing called it, so a worker marked INACTIVE kept a valid session for the rest of its sixteen
+hours — still able to clock in, change position and stream their location, because the request
+path reads the snapshot and never re-reads the worker's status. The first two rows above are now
+enforced by tests in `tests/integration/admin-api.test.ts`. **The last three rows are the standing
+obligation: the route that first changes a role, a role's permissions or a membership has to call
+`revokeForActor` in the same request, or it reopens exactly this hole.**
+
+The route reports `sessionsRevoked` so the screen can say what just happened — an admin resetting
+a PIN mid-shift has stopped that worker's phone reporting until they sign in with the new one.
 
 Separately, a password change invalidates every session issued before it without a sweep:
 `users.credentialsChangedAt` is compared against `sessions.createdAt` on every lookup.

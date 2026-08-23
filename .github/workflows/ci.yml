@@ -111,8 +111,14 @@ jobs:
 
       - run: pnpm test:integration
 
+      # `SEED_DEMO` on purpose. Without it the seed takes the platform-reference path and returns
+      # before touching a tenant, so the step passed for a month while the demo path was broken
+      # against a schema change it had never been updated for. A step that verifies the half that
+      # cannot break is not verification.
       - name: Verify the seed runs
         run: pnpm db:seed
+        env:
+          SEED_DEMO: 'true'
 
   build:
     name: Build

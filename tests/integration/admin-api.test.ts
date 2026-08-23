@@ -621,6 +621,97 @@ describe('resetting a PIN', () => {
     expect(stored?.deletedAt).toBeNull();
   });
 
+  /**
+   * Deactivation has to reach the device that is already signed in.
+   *
+   * Permissions are snapshotted onto the session row, so the request path never re-reads the
+   * worker's status — which meant a worker marked INACTIVE kept a fully valid session for the
+   * rest of its sixteen-hour life. They could clock in, move between positions and keep streaming
+   * their location, hours after the organization had said they should not. ADR 0005 named
+   * `revokeForActor` as the price of the snapshot; nothing called it.
+   */
+  it('signs a deactivated worker out of the device they are already holding', async () => {
+    const workerId = await seedWorker();
+    const worker = await workerLogin('748291');
+    expect(worker.statusCode).toBe(200);
+    const workerCookie = cookiesFrom(worker.headers['set-cookie']);
+
+    // The session works right up until the moment it should not.
+    const before = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: workerCookie },
+    });
+    expect(before.statusCode).toBe(200);
+
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/workers/${workerId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { status: 'INACTIVE' },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(patched.json().sessionsRevoked).toBe(true);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: workerCookie },
+    });
+    expect(after.statusCode).toBe(401);
+  });
+
+  /**
+   * A reset PIN is a changed credential, and a changed credential ends the sessions issued under
+   * the old one — the same rule `credentialsChangedAt` already enforces for an admin account.
+   * Otherwise the reset only takes effect on devices that have signed out, which is precisely not
+   * the case anyone resets a PIN for.
+   */
+  it('signs the worker out when their PIN is reset', async () => {
+    const workerId = await seedWorker();
+    const worker = await workerLogin('748291');
+    const workerCookie = cookiesFrom(worker.headers['set-cookie']);
+
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/workers/${workerId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { pin: '350617' },
+    });
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: workerCookie },
+    });
+    expect(after.statusCode).toBe(401);
+  });
+
+  /** An ordinary edit is not a security event and must not sign anybody out mid-shift. */
+  it('leaves the session alone when only a name is corrected', async () => {
+    const workerId = await seedWorker();
+    const worker = await workerLogin('748291');
+    const workerCookie = cookiesFrom(worker.headers['set-cookie']);
+
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/workers/${workerId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { firstName: 'Иванка' },
+    });
+    expect(patched.json().sessionsRevoked).toBe(false);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/api/v1/worker/state',
+      headers: { cookie: workerCookie },
+    });
+    expect(after.statusCode).toBe(200);
+  });
+
   it('reports another organization’s worker as not found', async () => {
     const workerId = await seedWorker();
     const { cookie, csrf } = await loginAdmin(other.slug);
@@ -790,14 +881,76 @@ describe('the dashboard', () => {
     expect(days).toBeLessThanOrEqual(92);
   });
 
-  it('survives a malformed date instead of returning a 500', async () => {
+  /**
+   * A malformed date is refused, not substituted.
+   *
+   * This used to answer 200. `new Date('not-a-date')` is `NaN`, the range resolver noticed and
+   * quietly fell back to the last 24 hours, and the response echoed that window in `range` as
+   * though it had been asked for. Somebody reading a dashboard has no way to tell a report about
+   * the period they requested from a report about a period the server picked, and these numbers
+   * are the ones people act on.
+   */
+  it('refuses a malformed date rather than reporting on a period nobody asked for', async () => {
     const { cookie } = await loginAdmin(tenant.slug);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/dashboard?from=not-a-date',
       headers: { cookie },
     });
+
+    expect(response.statusCode).toBe(400);
+    const body = response.json();
+    expect(body.error.code).toBe('validation.failed');
+    expect(body.error.details.issues[0].path).toBe('from');
+  });
+
+  it('refuses a range that ends before it starts', async () => {
+    const { cookie } = await loginAdmin(tenant.slug);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/dashboard?from=2026-03-10T00:00:00Z&to=2026-03-01T00:00:00Z',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  /**
+   * `limit=abc` reached Prisma as `take: NaN` and came back a 500 — the server taking the blame
+   * for the client's typo, and an error page where a validation message belonged.
+   */
+  it('refuses a limit that is not a number', async () => {
+    const { cookie } = await loginAdmin(tenant.slug);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/trips?limit=abc',
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('validation.failed');
+  });
+
+  it('refuses a limit past the endpoint’s ceiling rather than clamping it', async () => {
+    const { cookie } = await loginAdmin(tenant.slug);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/trips?limit=100000',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  /** An absent bound still means "the usual window for this screen". Absent is not malformed. */
+  it('still defaults the window when no dates are given', async () => {
+    const { cookie } = await loginAdmin(tenant.slug);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/dashboard',
+      headers: { cookie },
+    });
+
     expect(response.statusCode).toBe(200);
+    expect(response.json().range.from).toBeTruthy();
   });
 });
 

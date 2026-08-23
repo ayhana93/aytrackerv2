@@ -159,25 +159,32 @@ parent in the same organization.
 Every index that serves a tenant-scoped query leads with `organizationId`, so one B-tree serves
 both the tenant filter and the secondary predicate.
 
-| Access pattern               | Index                                                       |
-| ---------------------------- | ----------------------------------------------------------- |
-| Worker's open shift          | `shifts (organizationId, workerId, status)`                 |
-| Shifts at a site in a period | `shifts (organizationId, siteId, scheduledStart)`           |
-| Position history of a shift  | `position_sessions (organizationId, shiftId, startedAt)`    |
-| Position utilization         | `position_sessions (organizationId, positionId, startedAt)` |
-| Production for a period      | `production_entries (organizationId, recordedAt)`           |
-| Driver's trips               | `driver_trips (organizationId, driverId, startedAt)`        |
-| **Route reconstruction**     | `trip_location_points (organizationId, tripId, timestamp)`  |
-| Location retention sweep     | `trip_location_points (organizationId, timestamp)`          |
-| Vehicle costs for a month    | `vehicle_expenses (organizationId, vehicleId, date)`        |
-| Expiring documents           | `vehicle_documents (organizationId, expiresAt)`             |
-| Session lookup               | `sessions (tokenHash)` unique                               |
-| Session expiry sweep         | `sessions (expiresAt)`                                      |
-| Audit trail for an entity    | `audit_logs (organizationId, entityType, entityId)`         |
+| Access pattern               | Index                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| Worker's open shift          | `shifts (organizationId, workerId, status)`                                 |
+| Shifts at a site in a period | `shifts (organizationId, siteId, scheduledStart)`                           |
+| Position history of a shift  | `position_sessions (organizationId, shiftId, startedAt)`                    |
+| Position utilization         | `position_sessions (organizationId, positionId, startedAt)`                 |
+| Production for a period      | `production_entries (organizationId, recordedAt)`                           |
+| Driver's trips               | `driver_trips (organizationId, driverId, startedAt)`                        |
+| **Route reconstruction**     | `location_points (organizationId, tripId, timestamp)`                       |
+| A session's own point stream | `location_points (organizationId, trackingSessionId, timestamp)` **unique** |
+| Location retention sweep     | `location_points (organizationId, timestamp)`                               |
+| Vehicle costs for a month    | `vehicle_expenses (organizationId, vehicleId, date)`                        |
+| Expiring documents           | `vehicle_documents (organizationId, expiresAt)`                             |
+| Session lookup               | `sessions (tokenHash)` unique                                               |
+| Session expiry sweep         | `sessions (expiresAt)`                                                      |
+| Audit trail for an entity    | `audit_logs (organizationId, entityType, entityId)`                         |
+
+The session index is **unique**, not merely an index: one fix per session per instant. It replaced
+the plain index of the same three columns rather than joining it, because two indexes on the same
+shape would double the write cost of every ingested point and buy nothing. What it buys instead is
+that a device queue re-sending a batch whose acknowledgement was lost — the ordinary consequence of
+a bad connection — cannot store the same afternoon twice. See docs/offline-sync.md § 2.
 
 ### The one to watch
 
-`trip_location_points` is the highest-volume table by an order of magnitude. Sizing at the
+`location_points` is the highest-volume table by an order of magnitude. Sizing at the
 target scale (100 active drivers, 8 h/day, 20 s sampling):
 
 ```
@@ -189,9 +196,11 @@ At roughly 120 bytes/row that is ~520 MB/month of table plus index. This is the 
 - **Adaptive sampling** — the device sends far fewer points when stationary or on low battery.
 - **Server-side admission control** — points arriving faster than the configured floor are
   dropped, not stored.
-- **Configurable retention** — raw points default to 180 days; trip summaries to 5 years.
-  Deleting the coordinates does not invalidate a year-old cost report, because the summary
-  carries the distance.
+- **Retention** — raw points are _intended_ to be kept 180 days and trip summaries 5 years, so
+  that deleting the coordinates does not invalidate a year-old cost report. `deleteOlderThan` is
+  written; nothing schedules it and no setting configures the window, so in practice points are
+  kept indefinitely and the sizing above is a floor rather than a steady state. See
+  docs/production-audit.md.
 
 If volume outgrows a single table, the migration path is monthly range partitioning on
 `timestamp` — the access pattern (always a trip within a time window) suits it, and the

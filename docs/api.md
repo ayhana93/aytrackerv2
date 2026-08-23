@@ -171,9 +171,13 @@ draining the battery. Nothing the body claims about identity, vehicle, trip, dis
 state is trusted; each is resolved or recomputed on the server. See
 [workforce-tracking.md](workforce-tracking.md).
 
-The response reports `accepted`, `rejected` (outside the session window, or malformed), `dropped`
-(faster than the sampling floor), the derived `state` and the session's recomputed
-`distanceMeters`.
+The response reports `accepted` (stored), `rejected` (outside the session window, or malformed),
+`dropped` (faster than the sampling floor), `duplicates` (already held for this session at that
+instant — a re-sent batch), the derived `state` and the session's recomputed `distanceMeters`.
+
+A re-sent batch succeeds and stores nothing: refusing a retry would lose the points in it that
+genuinely are new, and a driver whose connection is bad enough to lose an acknowledgement is the
+last person whose upload should fail. See [offline-sync.md](offline-sync.md) § 2.
 
 `/state` returns whether a session is open, what it has recorded so far, and the sampling policy
 the device should follow — one small read a collector can poll cheaply on reconnect to find out
@@ -212,7 +216,29 @@ management portal is for people, not for a device token.
 | PATCH  | `/settings`             | `settings.update`     |
 
 `/dashboard` answers "who is working right now" from open position sessions, and reports
-tracking warnings as observations rather than accusations.
+tracking warnings as observations rather than accusations. Its totals, its hourly series and its
+per-area breakdown are all aggregated by PostgreSQL — it reads one row per hour, not one row per
+production entry, so a 92-day window is a grouped scan rather than a few hundred thousand rows
+crossing the wire to be added up in Node.
+
+#### Reporting query parameters
+
+`from`, `to`, `workerId`, `workAreaId` and `limit` are validated with Zod, not cast.
+
+| Input                    | Result                                                     |
+| ------------------------ | ---------------------------------------------------------- |
+| `from` absent            | The endpoint's default window (a day, a week, 30 days)     |
+| `from` not ISO 8601      | `400 validation.failed`, naming the field                  |
+| `to` before `from`       | `400 validation.failed`                                    |
+| Range wider than 92 days | Narrowed to the most recent 92, and echoed back in `range` |
+| `limit` not a number     | `400 validation.failed`                                    |
+| `limit` above the cap    | `400 validation.failed` — refused, not silently clamped    |
+
+A malformed date used to be substituted: `new Date('yesterday')` is `NaN`, the resolver noticed
+and quietly fell back to the last 24 hours, and the response echoed that window in `range` as
+though it had been requested. There is no way for a reader to tell a report about the period they
+asked for from a report about a period the server chose, and these are the numbers people act on.
+An absent bound still means "the usual window for this screen" — absent is not malformed.
 
 `/workforce` returns the counts — employed, working, on break, driving, reporting, not reporting,
 untracked — computed in the database rather than by summing a capped list in a browser. "At work

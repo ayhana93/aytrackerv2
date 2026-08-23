@@ -94,10 +94,27 @@ export async function buildApp(config: AppConfig, services: AppServices): Promis
         request.actor
           ? `org:${request.actor.organizationId}:${request.actor.actorType}`
           : `ip:${request.ip}`,
-      // In-process by default. REDIS_URL switches this to a shared store so the limit holds
-      // across replicas rather than being multiplied by the replica count.
-      ...(config.env.REDIS_URL ? {} : {}),
+      /**
+       * The counters live in this process, and only in this process.
+       *
+       * This used to carry a comment saying `REDIS_URL` switched it to a shared store, above a
+       * spread that was empty in both branches — so the setting did nothing and an operator who
+       * configured it had every reason to believe the limit was shared. It is not: with N
+       * replicas the effective limit is N times the number written here, and the login limiter
+       * in particular is weaker than it reads.
+       *
+       * Wiring the shared store is a dependency and a deployment decision rather than a bug fix;
+       * until then the truth is stated here and warned about at boot. See
+       * docs/production-audit.md § Remaining Issues.
+       */
     });
+
+    if (config.env.REDIS_URL) {
+      app.log.warn(
+        'REDIS_URL is set, but rate limiting is in-process: with more than one replica the ' +
+          'effective limit is multiplied by the replica count.',
+      );
+    }
   }
 
   await app.register(authentication, { sessions: services.sessions });

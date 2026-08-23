@@ -1,5 +1,5 @@
 import type { DatabaseClient, Prisma, PrismaClient } from '@aytracker/database';
-import { withTenant } from '@aytracker/database';
+import { isUniqueViolation, withTenant } from '@aytracker/database';
 import type {
   ClientActionId,
   OrganizationId,
@@ -387,18 +387,33 @@ export class PrismaIdempotencyStore implements IdempotencyStore {
       throw new ConflictError('idempotency.in_progress', 'This action is already being processed.');
     }
 
-    await this.prisma.idempotencyKey.create({
-      data: {
-        organizationId: input.organizationId,
-        actorType: input.actorType,
-        actorId: input.actorId,
-        clientActionId: input.clientActionId,
-        endpoint: input.endpoint,
-        requestHash: input.requestHash,
-        state: 'PENDING',
-        expiresAt: new Date(Date.now() + input.ttlSeconds * 1000),
-      },
-    });
+    try {
+      await this.prisma.idempotencyKey.create({
+        data: {
+          organizationId: input.organizationId,
+          actorType: input.actorType,
+          actorId: input.actorId,
+          clientActionId: input.clientActionId,
+          endpoint: input.endpoint,
+          requestHash: input.requestHash,
+          state: 'PENDING',
+          expiresAt: new Date(Date.now() + input.ttlSeconds * 1000),
+        },
+      });
+    } catch (error) {
+      /**
+       * Lost the race to claim this key.
+       *
+       * The read above and this insert are two statements, so two concurrent replays of the same
+       * queued action can both find nothing. The unique index is what makes the claim atomic —
+       * exactly one of them creates the row and runs the command, which is the guarantee that
+       * matters. The other is told the action is in flight, the same answer it would have got a
+       * millisecond later from the PENDING branch above. Without this it got a 500 for behaving
+       * correctly, on the endpoint a flaky connection retries hardest.
+       */
+      if (!isUniqueViolation(error)) throw error;
+      throw new ConflictError('idempotency.in_progress', 'This action is already being processed.');
+    }
     return { replayed: false };
   }
 

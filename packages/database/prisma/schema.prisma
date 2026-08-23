@@ -1371,7 +1371,11 @@ model LocationPoint {
   trackingSession TrackingSession @relation(fields: [trackingSessionId], references: [id], onDelete: Cascade)
   trip            DriverTrip?     @relation(fields: [tripId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId, trackingSessionId, timestamp])
+  /// One fix per session per instant. A device queue that re-sends a batch whose acknowledgement
+  /// was lost — the ordinary consequence of poor signal — used to store it twice; `appendMany`
+  /// skips the duplicates against this index. It also serves every read by session, which is why
+  /// it replaced the plain index of the same shape rather than joining it.
+  @@unique([organizationId, trackingSessionId, timestamp], map: "location_points_session_instant_key")
   @@index([organizationId, tripId, timestamp])
   @@index([organizationId, timestamp])
   @@map("location_points")

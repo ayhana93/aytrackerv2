@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { PERMISSIONS, assertPermission } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
 import { hashRequestBody } from '@aytracker/module-shifts';
-import { endTripSchema, startTripSchema } from '@aytracker/validation';
+import { driverTripListQuerySchema, endTripSchema, startTripSchema } from '@aytracker/validation';
 import { DEFAULT_SAMPLING_POLICY, estimateFuel } from '@aytracker/tracking';
 import type {
   ClientActionId,
@@ -490,12 +490,10 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
     app.get('/trips', async (request) => {
       const actor = app.requireAuth(request);
       assertPermission(actor, PERMISSIONS.DRIVER_TRIP_HISTORY);
-      const query = request.query as { from?: string; to?: string; limit?: string };
+      const query = driverTripListQuerySchema.parse(request.query ?? {});
 
-      const to = query.to ? new Date(query.to) : services.clock.now();
-      const from = query.from
-        ? new Date(query.from)
-        : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const to = query.to ?? services.clock.now();
+      const from = query.from ?? new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
 
       const trips = await services.prisma.driverTrip.findMany({
         where: {
@@ -516,7 +514,7 @@ export function driverRoutes(services: AppServices): FastifyPluginAsync {
           vehicle: { select: { registrationNumber: true } },
         },
         orderBy: { startedAt: 'desc' },
-        take: Math.min(Number(query.limit ?? 50), 200),
+        take: query.limit,
       });
 
       return { trips };

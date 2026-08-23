@@ -21,6 +21,12 @@ sessions or a user keeps stale permissions until theirs expires — up to 16 hou
 change, worker/driver deactivation, membership removal. This is the sharp edge of the tradeoff
 and is reviewed on every change to roles or membership.
 
+**It was written down and not wired.** For a while `revokeForActor` had no call sites at all, so
+deactivating a worker changed a row and nothing else: their session stayed valid for up to sixteen
+hours, and the worker portal, position changes and location streaming all kept working. Worker
+deactivation and PIN reset now call it, with regression tests. The other three cases have no route
+yet — whichever route introduces one has to call it too. See docs/authentication.md for the table.
+
 A password change is handled differently and better: `users.credentialsChangedAt` is compared
 against `sessions.createdAt` on every lookup, so older sessions are simply not returned. No sweep
 needed.
