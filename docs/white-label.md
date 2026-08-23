@@ -83,8 +83,16 @@ light.
 
 Branding assets are rendered into a customer's login page. That makes them a supply chain.
 
-**Object storage, never the database.** Blobs in Postgres bloat backups and slow every query on
-the table.
+**Object storage, never the database — with one recorded exception.** Blobs in Postgres bloat
+backups and slow every query on the table.
+
+The exception is the logo an organization uploads from `/admin/settings`. There is no bucket in
+this deployment and a file written to a container filesystem is gone on the next deploy, which
+would show customers their branding vanishing at random. Those bytes live in `organization_logos`,
+a table of its own that nothing selects from except `GET /api/v1/branding/logos/:id` — so the cost
+the rule was aimed at, every query on a hot table dragging a blob behind it, does not arise. When
+object storage exists, `OrganizationBranding.logoUrl` is already the field that points at it and
+the migration is a backfill rather than a redesign.
 
 **Upload validation:**
 
@@ -106,19 +114,38 @@ for.
 storage host. Accepting an arbitrary URL would let one tenant point another's users at a host they
 control.
 
-**Serving:** assets are public-read by URL (they are logos), served from a storage domain, with
-`Content-Type` set from the validated type and `X-Content-Type-Options: nosniff`.
+**Serving:** assets are public-read by URL (they are logos), with `Content-Type` set from the
+**sniffed** type — never from the upload's declared one — and `X-Content-Type-Options: nosniff`.
+The id addresses one immutable upload, so the response is cached for a year; choosing a different
+logo produces a different URL rather than changing what this one returns.
+
+`GET /api/v1/branding/public?slug=…` serves a tenant's name, logo, colour and login message with
+no session, because a login page has to render them before anybody has proved who they are. It
+publishes nothing the company code did not already publish, and nothing else is exposed there.
 
 ---
 
 ## 5. Permissions
 
 ```
-branding.read      viewer and above
-branding.update    admin and owner
+branding.read        viewer and above     see the logo gallery
+branding.update      admin and owner      upload, choose and delete a logo
+organization.read    viewer and above     see the name and the login code
+organization.update  admin and owner      rename the organization
+users.manage         admin and owner      change a member's login email
 ```
 
-Every change is audited (`branding.updated`) with before and after values.
+Every change is audited — `organization.updated`, `branding.logo_uploaded`,
+`branding.logo_selected`, `branding.logo_deleted`, `member.email_changed` — with before and after
+values where a value changed.
+
+An organization's **name is not a label**: it replaces the product's name in the admin sidebar, on
+the worker and driver login screens and in both portals. `AYTRACKER` survives only where no tenant
+is known — the sign-up page and the admin login, which are the product's own front doors.
+
+A member's **email is a login identity**, so changing one ends that user's sessions
+(`credentialsChangedAt`), is refused for an account that administers the platform rather than the
+tenant, and can only reach a member of the caller's own organization.
 
 White-label is an entitlement (`branding.white_label`, Professional and above). Organizations
 without it get AYtracker's neutral defaults.
@@ -134,6 +161,8 @@ Reserved in the schema, deliberately not built:
 - **Custom email sender** — needs SPF/DKIM verification per customer.
 - **Custom email templates**
 - **Custom login background**
+- **Per-theme logos** — `logoLightUrl` / `logoDarkUrl` exist; the settings screen uploads one logo
+  and the gallery previews it on white, which is where a single asset has to work.
 - **Custom app name** — `customAppName` exists.
 - **Custom support and legal links**
 

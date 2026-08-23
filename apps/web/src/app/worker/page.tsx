@@ -21,7 +21,7 @@ import type { TrackingState } from '@aytracker/tracking';
 import { ApiError } from '../../lib/api';
 import { authApi } from '../../lib/auth';
 import {
-  BACKGROUND_NOTICE,
+  backgroundNotice,
   requestLocationPermission,
   useCapabilities,
   useTrackingCollector,
@@ -34,6 +34,8 @@ import {
   type SelectableVehicle,
   type WorkerState,
 } from '../../lib/worker';
+import { PRODUCT_NAME, useRememberedBrand } from '../../lib/brand';
+import { BrandMark } from '../../components/brand-mark';
 
 /**
  * Worker portal.
@@ -155,6 +157,16 @@ export default function WorkerPortalPage() {
     [reload],
   );
 
+  /**
+   * Whose portal this is.
+   *
+   * Read from the company code this device signed in with rather than from the session, because
+   * the header renders before any request has come back and a bar that says one name and then
+   * another half a second later is worse than one that is briefly neutral.
+   */
+  const brand = useRememberedBrand();
+  const appName = brand?.organizationName ?? PRODUCT_NAME;
+
   const goHome = useCallback(() => {
     setScreen('home');
     setTarget(null);
@@ -274,7 +286,12 @@ export default function WorkerPortalPage() {
         }
         title={
           screen === 'home' ? (
-            <span className="ay-h3">AYtracker</span>
+            <span
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-2)' }}
+              className="ay-h3"
+            >
+              <BrandMark name={appName} logoUrl={brand?.logoUrl ?? null} logoHeight="1.5rem" />
+            </span>
           ) : screen === 'positions' ? (
             'Смяна на позиция'
           ) : screen === 'vehicles' ? (
@@ -300,6 +317,7 @@ export default function WorkerPortalPage() {
             busy={busy}
             capability={capability}
             tracking={trackingStatus}
+            appName={appName}
             onStartShift={() =>
               void run(async () => {
                 /*
@@ -347,6 +365,7 @@ export default function WorkerPortalPage() {
             routeLabel={routeLabel}
             onRouteLabelChange={setRouteLabel}
             busy={busy}
+            appName={appName}
             onConfirm={confirm}
             onCancel={goHome}
           />
@@ -397,6 +416,7 @@ function HomeScreen({
   busy,
   capability,
   tracking,
+  appName,
   onStartShift,
   onEndShift,
   onChangePosition,
@@ -408,6 +428,8 @@ function HomeScreen({
   busy: boolean;
   capability: BackgroundCapability | null;
   tracking: CollectorStatus | null;
+  /** The employer's name. To the worker, that is what this application is called. */
+  appName: string;
   onStartShift: () => void;
   onEndShift: () => void;
   onChangePosition: () => void;
@@ -432,7 +454,13 @@ function HomeScreen({
       </div>
 
       {shift === null ? (
-        <NoShift state={state} busy={busy} capability={capability} onStartShift={onStartShift} />
+        <NoShift
+          state={state}
+          busy={busy}
+          capability={capability}
+          appName={appName}
+          onStartShift={onStartShift}
+        />
       ) : null}
 
       {shift !== null ? (
@@ -452,6 +480,7 @@ function HomeScreen({
               capability={capability}
               serverState={state.tracking.trackingState}
               distanceMeters={state.tracking.distanceMeters}
+              appName={appName}
             />
           ) : null}
 
@@ -526,11 +555,14 @@ function TrackingCard({
   capability,
   serverState,
   distanceMeters,
+  appName,
 }: {
   tracking: CollectorStatus | null;
   capability: BackgroundCapability | null;
   serverState: string;
   distanceMeters: number;
+  /** The employer's name. To the worker, that is what this application is called. */
+  appName: string;
 }) {
   const state: TrackingState =
     tracking && tracking.state !== 'STOPPED' ? tracking.state : (serverState as TrackingState);
@@ -556,7 +588,7 @@ function TrackingCard({
         {denied
           ? 'Достъпът до местоположението е отказан. Часовете се отчитат, но маршрутът — не. Разреши го от настройките на телефона.'
           : capability
-            ? BACKGROUND_NOTICE[capability]
+            ? backgroundNotice(capability, appName)
             : ' '}
       </p>
 
@@ -573,11 +605,14 @@ function NoShift({
   state,
   busy,
   capability,
+  appName,
   onStartShift,
 }: {
   state: WorkerState;
   busy: boolean;
   capability: BackgroundCapability | null;
+  /** The employer's name. To the worker, that is what this application is called. */
+  appName: string;
   onStartShift: () => void;
 }) {
   const blocked = !state.policy.allowWorkerSelfShiftStart;
@@ -615,7 +650,7 @@ function NoShift({
               <li>Извън смяна нищо не се записва.</li>
             </ul>
             <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-3)' }}>
-              {capability ? BACKGROUND_NOTICE[capability] : ' '}
+              {capability ? backgroundNotice(capability, appName) : ' '}
             </p>
           </Card>
 
@@ -756,6 +791,7 @@ function ConfirmScreen({
   routeLabel,
   onRouteLabelChange,
   busy,
+  appName,
   onConfirm,
   onCancel,
 }: {
@@ -765,6 +801,8 @@ function ConfirmScreen({
   routeLabel: string;
   onRouteLabelChange: (value: string) => void;
   busy: boolean;
+  /** The organization's name, which is what this application is called to the person reading it. */
+  appName: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -807,11 +845,18 @@ function ConfirmScreen({
             />
           </Field>
 
+          {/*
+            Two facts, both of which the driver has to hear before they set off: there is no pause,
+            and in a browser the recording depends on the screen. Saying only the first would be a
+            promise the platform cannot keep; saying only the second would leave them looking for a
+            pause button on the road.
+          */}
           <Card>
             <p className="ay-overline ay-muted">Проследяване</p>
             <p className="ay-small" style={{ marginTop: 'var(--ay-space-2)' }}>
               Записът на маршрута започва веднага и продължава до края на курса. Няма пауза —
-              спиранията се виждат сами на маршрута.
+              спиранията се виждат сами на маршрута. В браузър записът работи, докато екранът е
+              включен — {appName} ще го задържи буден, а прекъсванията се отбелязват на маршрута.
             </p>
           </Card>
         </>

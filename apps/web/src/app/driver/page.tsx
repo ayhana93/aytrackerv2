@@ -19,7 +19,7 @@ import type { BackgroundCapability, CollectorStatus } from '@aytracker/tracking-
 import type { TrackingState } from '@aytracker/tracking';
 import { ApiError } from '../../lib/api';
 import { authApi } from '../../lib/auth';
-import { useCapabilities, useTrackingCollector } from '../../lib/tracking';
+import { backgroundNotice, useCapabilities, useTrackingCollector } from '../../lib/tracking';
 import {
   currentPosition,
   driverApi,
@@ -27,6 +27,8 @@ import {
   type DriverVehicle,
   type TripHistoryRow,
 } from '../../lib/driver';
+import { PRODUCT_NAME, useRememberedBrand } from '../../lib/brand';
+import { BrandMark } from '../../components/brand-mark';
 
 /**
  * Driver portal.
@@ -63,21 +65,6 @@ const TRACKING_LABELS: Readonly<Record<TrackingState, string>> = {
   STOPPED: 'Спряно',
 };
 
-/**
- * What to tell the driver about the screen going off.
- *
- * Never a promise the platform will not keep. On the web the honest answer is that recording
- * needs the screen on; only a native build can say otherwise.
- */
-const BACKGROUND_NOTICE: Readonly<Record<BackgroundCapability, string>> = {
-  NATIVE: 'Записът продължава и при изгасен екран.',
-  WAKE_LOCK:
-    'Записът работи, докато екранът е включен. AYtracker го задържа буден по време на курса.',
-  FOREGROUND_ONLY:
-    'Дръж AYtracker отворен, за да се записва маршрутът. Прекъсванията се отбелязват.',
-  NONE: 'Това устройство не поддържа проследяване на местоположението.',
-};
-
 export default function DriverPortalPage() {
   const [state, setState] = useState<DriverState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -86,6 +73,9 @@ export default function DriverPortalPage() {
   const [tab, setTab] = useState<Tab>('home');
   const capability = useCapabilities();
   const clock = useServerClock(state?.serverTime ?? null);
+  // The employer's name and logo, from the company code this device signed in with.
+  const brand = useRememberedBrand();
+  const appName = brand?.organizationName ?? PRODUCT_NAME;
 
   const reload = useCallback(async () => {
     try {
@@ -192,8 +182,12 @@ export default function DriverPortalPage() {
 
   return (
     <PortalShell>
+      {/* The title follows the state: there is no "current route" until a trip is running. */}
       <AppBar
-        title={<span className="ay-h3">{trip ? 'Текущ маршрут' : 'AYtracker'}</span>}
+        leading={
+          <BrandMark name={appName} logoUrl={brand?.logoUrl ?? null} nameless logoHeight="1.5rem" />
+        }
+        title={<span className="ay-h3">{trip ? 'Текущ маршрут' : appName}</span>}
         trailing={<ThemeToggle labels={{ light: 'Светла', dark: 'Тъмна', system: 'Системна' }} />}
       />
 
@@ -212,6 +206,7 @@ export default function DriverPortalPage() {
             busy={busy}
             capability={capability}
             collector={collectorStatus}
+            appName={appName}
             onEnd={() =>
               void run(async () => {
                 const position = await currentPosition();
@@ -229,6 +224,7 @@ export default function DriverPortalPage() {
             state={state}
             busy={busy}
             capability={capability}
+            appName={appName}
             onStart={(input) =>
               void run(async () => {
                 const position = await currentPosition();
@@ -261,6 +257,7 @@ function ActiveTrip({
   busy,
   capability,
   collector,
+  appName,
   onEnd,
 }: {
   state: DriverState;
@@ -269,6 +266,8 @@ function ActiveTrip({
   busy: boolean;
   capability: BackgroundCapability | null;
   collector: CollectorStatus | null;
+  /** The employer's name. To the driver, that is what this application is called. */
+  appName: string;
   onEnd: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -323,7 +322,7 @@ function ActiveTrip({
           </Badge>
         </div>
         <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-3)' }}>
-          {capability ? BACKGROUND_NOTICE[capability] : ' '}
+          {capability ? backgroundNotice(capability, appName) : ' '}
         </p>
         {collector && collector.queuedPoints > 0 ? (
           <p className="ay-caption ay-muted">
@@ -420,11 +419,14 @@ function StartTrip({
   state,
   busy,
   capability,
+  appName,
   onStart,
 }: {
   state: DriverState;
   busy: boolean;
   capability: BackgroundCapability | null;
+  /** The employer's name. To the driver, that is what this application is called. */
+  appName: string;
   onStart: (input: {
     vehicleId: string | null;
     label: string | null;
@@ -556,7 +558,7 @@ function StartTrip({
       <Card>
         <p className="ay-overline ay-muted">Проследяване</p>
         <p className="ay-small" style={{ marginTop: 'var(--ay-space-2)' }}>
-          {capability ? BACKGROUND_NOTICE[capability] : ' '}
+          {capability ? backgroundNotice(capability, appName) : ' '}
         </p>
         <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-2)' }}>
           Записът върви от началото до края на курса. Няма пауза — спиранията се виждат сами на

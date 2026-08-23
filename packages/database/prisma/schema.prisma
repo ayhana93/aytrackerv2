@@ -233,6 +233,7 @@ model Organization {
 
   branding        OrganizationBranding?
   settings        OrganizationSettings?
+  logos           OrganizationLogo[]
   members         OrganizationMember[]
   roles           Role[]
   sites           Site[]
@@ -272,11 +273,17 @@ model Organization {
   @@map("organizations")
 }
 
-/// White-label branding. One row per organization; assets live in object storage and only
-/// their URLs are stored here. See docs/white-label.md.
+/// White-label branding. One row per organization. See docs/white-label.md.
+///
+/// Two ways to point at a logo, and they are not interchangeable. `logoAssetId` is a logo the
+/// organization uploaded here and picked from its own gallery — the normal case, and the only one
+/// the settings screen writes. The `*Url` fields stay for an externally hosted asset, so a
+/// customer already serving their logo from their own CDN is not forced to re-upload it.
 model OrganizationBranding {
   id                 String   @id @default(uuid(7))
   organizationId     String   @unique
+  /// The chosen uploaded logo. Null means "no logo picked", never "no logo uploaded".
+  logoAssetId        String?
   logoUrl            String?
   logoLightUrl       String?
   logoDarkUrl        String?
@@ -293,9 +300,47 @@ model OrganizationBranding {
   createdAt          DateTime @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime @updatedAt @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  logoAsset    OrganizationLogo? @relation(fields: [logoAssetId], references: [id], onDelete: SetNull)
 
   @@map("organization_branding")
+}
+
+/// A logo the organization uploaded, kept so it can be chosen again later.
+///
+/// The bytes live in this table rather than in object storage, which is a deliberate exception to
+/// the rule in docs/white-label.md § 4 and the reason is deployment, not preference: there is no
+/// bucket in this deployment, and a logo written to a container filesystem disappears on the next
+/// deploy — which would show every customer their branding vanishing at random. A dedicated table
+/// keeps the cost where the rule was aimed: `data` is never selected by any query except the one
+/// that serves the image, so no screen and no report ever reads a blob.
+///
+/// Uploads are capped and content-sniffed by the route; an SVG is refused rather than sanitized,
+/// because a tenant's logo renders on that tenant's login page and an SVG is a script container.
+model OrganizationLogo {
+  id             String @id @default(uuid(7))
+  organizationId String
+  /// What the admin called the file. Display only — never used to build a path or a URL.
+  fileName    String
+  /// Sniffed from the bytes on upload, not taken from the request. This is what the asset is
+  /// served as, so trusting the client here would be trusting it to choose a Content-Type.
+  contentType String
+  byteSize    Int
+  /// SHA-256 of the bytes. Unique per organization, so re-uploading the same file picks the asset
+  /// that is already there instead of filling the gallery with copies of one logo.
+  checksum    String
+  data        Bytes
+
+  uploadedByUserId String?
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  uploadedBy   User?        @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  brandings    OrganizationBranding[]
+
+  @@unique([organizationId, checksum])
+  @@index([organizationId, createdAt])
+  @@map("organization_logos")
 }
 
 model OrganizationSettings {
@@ -373,6 +418,7 @@ model User {
 
   memberships     OrganizationMember[]
   sessions        Session[]
+  uploadedLogos   OrganizationLogo[]
   workers         Worker[]
   drivers         Driver[]
   recommendations Recommendation[]

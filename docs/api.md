@@ -59,6 +59,31 @@ permission, or price. Those come from the session.
 With a session, the market comes from the organization's billing country and every query
 parameter is ignored ([market-pricing.md](market-pricing.md) § 2).
 
+### Branding — `/api/v1/branding`
+
+| Method | Path            | Auth | Notes                                                      |
+| ------ | --------------- | ---- | ---------------------------------------------------------- |
+| GET    | `/logos/:id`    | —    | The image bytes. Sniffed `Content-Type`, `nosniff`, cached |
+| GET    | `/public?slug=` | —    | A tenant's name, logo, colour and login message            |
+
+**Unauthenticated on purpose.** A login page has to render a customer's name and logo before
+anybody has proved who they are; requiring a session would put the vendor's name on every
+customer's front door. Both routes publish only what the company code already publishes, and
+nothing else about the tenant is served here ([white-label.md](white-label.md) § 4).
+
+### Admin settings — `/api/v1/admin`
+
+| Method | Path                  | Permission            | Notes                                             |
+| ------ | --------------------- | --------------------- | ------------------------------------------------- |
+| GET    | `/organization`       | `organization.read`   | Name, legal name, login code, status              |
+| PATCH  | `/organization`       | `organization.update` | Renames the tenant. The slug is not editable      |
+| GET    | `/branding/logos`     | `branding.read`       | The gallery, with the chosen one marked           |
+| POST   | `/branding/logos`     | `branding.update`     | Base64 upload; type sniffed, SVG refused          |
+| POST   | `/branding/logo`      | `branding.update`     | Chooses one, or `null` for none                   |
+| DELETE | `/branding/logos/:id` | `branding.update`     | Deleting the chosen one clears it                 |
+| GET    | `/members`            | `users.manage`        | The organization's management seats               |
+| PATCH  | `/members/:id/email`  | `users.manage`        | Ends that user's sessions; never a platform admin |
+
 ### Worker portal — `/api/v1/worker`
 
 Requires a **worker session**.

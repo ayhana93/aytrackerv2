@@ -498,7 +498,87 @@ export const adminApi = {
 
   history: (query?: { from?: string; to?: string; workAreaId?: string; limit?: number }) =>
     apiRequest<HistoryResponse>('/admin/history', { query }),
+
+  organization: () => apiRequest<{ organization: OrganizationProfile }>('/admin/organization'),
+  updateOrganization: (body: { name?: string; legalName?: string | null }) =>
+    apiRequest<{
+      organization: Pick<
+        OrganizationProfile,
+        'name' | 'legalName' | 'slug' | 'displayName' | 'logoUrl'
+      >;
+    }>('/admin/organization', { method: 'PATCH', body }),
+
+  logos: () =>
+    apiRequest<{ activeLogoId: string | null; logos: LogoRow[] }>('/admin/branding/logos'),
+  /**
+   * `data` is the base64 a `FileReader` produced, `data:` prefix and all — the endpoint strips it.
+   * Sent as JSON rather than multipart so it goes through the same CSRF check as every other
+   * mutation instead of a second, differently-guarded path.
+   */
+  uploadLogo: (body: { fileName: string; data: string; activate?: boolean }) =>
+    apiRequest<{ logo: LogoRow }>('/admin/branding/logos', { method: 'POST', body }),
+  selectLogo: (logoId: string | null) =>
+    apiRequest<{ activeLogoId: string | null; logoUrl: string | null }>('/admin/branding/logo', {
+      method: 'POST',
+      body: { logoId },
+    }),
+  deleteLogo: (logoId: string) =>
+    apiRequest<void>(`/admin/branding/logos/${logoId}`, { method: 'DELETE' }),
+
+  members: () => apiRequest<{ members: MemberRow[] }>('/admin/members'),
+  updateMemberEmail: (memberId: string, email: string) =>
+    apiRequest<{ member: { id: string; email: string }; signedOut: boolean }>(
+      `/admin/members/${memberId}/email`,
+      { method: 'PATCH', body: { email } },
+    ),
 };
+
+/* --------------------------------------------------------------- settings -- */
+
+export interface OrganizationProfile {
+  readonly name: string;
+  readonly legalName: string | null;
+  /** The tenant key workers and drivers type. Shown, never editable — see the route's comment. */
+  readonly slug: string;
+  readonly status: string;
+  readonly countryCode: string;
+  readonly timezone: string;
+  readonly trialEndsAt: string | null;
+  readonly createdAt: string;
+  readonly displayName: string;
+  readonly logoUrl: string | null;
+}
+
+export interface LogoRow {
+  readonly id: string;
+  readonly fileName: string;
+  readonly contentType: string;
+  readonly byteSize: number;
+  readonly createdAt: string;
+  readonly uploadedBy?: string | null;
+  readonly url: string;
+  readonly isActive: boolean;
+}
+
+export interface MemberRow {
+  readonly id: string;
+  readonly userId: string;
+  readonly email: string;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  readonly roleCode: string;
+  readonly roleName: string;
+  readonly status: 'ACTIVE' | 'INVITED' | 'SUSPENDED' | string;
+  readonly isActive: boolean;
+  /**
+   * An account that administers AYtracker itself rather than this organization. Its email is not
+   * the tenant's to change, and the screen says so instead of offering a button that is refused.
+   */
+  readonly isPlatformAdmin: boolean;
+  readonly isSelf: boolean;
+  readonly lastLoginAt: string | null;
+  readonly joinedAt: string | null;
+}
 
 export type LoadState<T> =
   { status: 'loading' } | { status: 'ready'; data: T } | { status: 'error'; error: ApiError };

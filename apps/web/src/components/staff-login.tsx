@@ -3,6 +3,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Field, ThemeToggle } from '@aytracker/ui';
 import { ApiError } from '../lib/api';
+import { PRODUCT_NAME, rememberSlug, rememberedSlug, usePublicBrand } from '../lib/brand';
+import { BrandMark } from './brand-mark';
 
 /**
  * The door into the worker and driver portals.
@@ -32,32 +34,6 @@ export interface StaffLoginProps {
   }) => Promise<unknown>;
 }
 
-/**
- * The company code, remembered per device.
- *
- * A tablet by the workshop door serves the same organization every shift; a worker's own phone
- * serves the same organization for years. Asking again each time is asking for a value they have
- * to go and find. Wrapped in try/catch because a browser with site data blocked throws on the
- * accessor itself, and a login screen that will not render is worse than one that forgets.
- */
-const SLUG_KEY = 'aytracker.organization';
-
-function rememberedSlug(): string {
-  try {
-    return window.localStorage.getItem(SLUG_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function rememberSlug(slug: string): void {
-  try {
-    window.localStorage.setItem(SLUG_KEY, slug);
-  } catch {
-    // A device that will not store it simply asks again. Not worth telling anyone about.
-  }
-}
-
 export function StaffLogin({
   title,
   subtitle,
@@ -85,6 +61,19 @@ export function StaffLogin({
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  /**
+   * Whose door this is.
+   *
+   * Fetched from the company code as soon as there is one — from the link, from what this device
+   * remembers, or from what is being typed. A worker signing in should see their own company's
+   * name and logo above the form, not the vendor's: the tablet by the workshop door belongs to
+   * the factory, and a screen that says otherwise is a screen nobody trusts with their PIN.
+   *
+   * Falls back to the product name while no code has been entered — which is the only moment
+   * nobody knows yet which company this is.
+   */
+  const brand = usePublicBrand(organizationSlug);
 
   useEffect(() => {
     // A link from the admin panel carries the code, which beats both typing and remembering.
@@ -158,16 +147,12 @@ export function StaffLogin({
         <ThemeToggle labels={{ light: 'Светла', dark: 'Тъмна', system: 'Системна' }} />
       </div>
 
-      <div
-        style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-3)' }}
-        aria-hidden="true"
-      >
-        <span className="ay-sidebar-mark" style={{ width: '2.5rem', height: '2.5rem' }}>
-          A
-        </span>
-        <span className="ay-h2" style={{ fontWeight: 650, letterSpacing: '-0.01em' }}>
-          AYTRACKER
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ay-space-3)' }}>
+        <BrandMark
+          name={brand?.organizationName ?? PRODUCT_NAME}
+          logoUrl={brand?.logoUrl ?? null}
+          size="hero"
+        />
       </div>
 
       <Card style={{ width: '100%', maxWidth: '24rem' }}>
@@ -180,16 +165,28 @@ export function StaffLogin({
             <p className="ay-caption ay-muted" style={{ marginTop: 'var(--ay-space-1)' }}>
               {subtitle}
             </p>
+            {/* The organization's own words to its staff, when it has set any. */}
+            {brand?.loginMessage ? (
+              <p className="ay-caption" style={{ marginTop: 'var(--ay-space-2)' }}>
+                {brand.loginMessage}
+              </p>
+            ) : null}
           </div>
 
           {fixedCompany === null ? null : fixedCompany ? (
             <div>
               <span className="ay-label">Фирма</span>
+              {/*
+                The company's name once it is known, and the code until then. The code is what
+                identifies the tenant, but it is not what the person standing here calls their
+                employer — showing `acme-eood-2` to somebody who works at "Акме" is a fact
+                rendered as a puzzle.
+              */}
               <p
-                className="ay-small ay-numeric"
+                className={brand ? 'ay-small' : 'ay-small ay-numeric'}
                 style={{ fontWeight: 600, marginTop: 'var(--ay-space-1)' }}
               >
-                {organizationSlug}
+                {brand?.organizationName ?? organizationSlug}
               </p>
             </div>
           ) : (

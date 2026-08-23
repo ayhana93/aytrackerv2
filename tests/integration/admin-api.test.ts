@@ -800,3 +800,272 @@ describe('the dashboard', () => {
     expect(response.statusCode).toBe(200);
   });
 });
+
+/**
+ * Settings: the organization's own name, logo and administrator addresses.
+ *
+ * The properties worth holding are not the shapes of the responses. A logo is a file we later
+ * serve from our own origin onto a customer's login page, so what may be stored is a security
+ * question; an email address is a login identity, so who may change whose is an authorization
+ * question. Both are tested here rather than inferred from the route reading correctly.
+ */
+
+/** A one-pixel PNG, as a browser's FileReader would hand it over. */
+const TINY_PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+describe('renaming the organization', () => {
+  it('changes the name every screen shows, including the session the shell renders from', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/organization',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { name: 'Акме ЕООД' },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().organization.name).toBe('Акме ЕООД');
+
+    const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie } });
+    expect(me.json().organizationName).toBe('Акме ЕООД');
+  });
+
+  it('leaves the login code alone, because a rename must not lock the workforce out', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/organization',
+      headers: { cookie, 'x-csrf-token': csrf },
+      // A slug in the body is not a field this endpoint has; it must be ignored, not honoured.
+      payload: { name: 'Ново име', slug: 'something-else' },
+    });
+
+    const after = await prisma.organization.findUniqueOrThrow({
+      where: { id: tenant.organizationId },
+      select: { slug: true },
+    });
+    expect(after.slug).toBe(tenant.slug);
+  });
+
+  it('records who renamed it', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/organization',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { name: 'Одитирано име' },
+    });
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { organizationId: tenant.organizationId, action: 'organization.updated' },
+    });
+    expect(entry?.actorUserId).toBe(tenant.adminUserId);
+  });
+});
+
+describe('the logo an organization uploads', () => {
+  it('stores a PNG, serves it publicly and shows it on the tenant’s login screen', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/branding/logos',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { fileName: 'logo.png', data: TINY_PNG, activate: true },
+    });
+    expect(upload.statusCode, upload.body).toBe(201);
+    const logo = upload.json().logo;
+    expect(logo.contentType).toBe('image/png');
+
+    // Served with no session at all: a worker at the login screen has not signed in yet.
+    const image = await app.inject({ method: 'GET', url: `/api/v1/branding/logos/${logo.id}` });
+    expect(image.statusCode).toBe(200);
+    expect(image.headers['content-type']).toBe('image/png');
+    expect(image.headers['x-content-type-options']).toBe('nosniff');
+
+    const branding = await app.inject({
+      method: 'GET',
+      url: `/api/v1/branding/public?slug=${tenant.slug}`,
+    });
+    expect(branding.statusCode).toBe(200);
+    expect(branding.json().logoUrl).toContain(logo.id);
+  });
+
+  /**
+   * The one that matters. An SVG is a script container and this asset is served from our own
+   * origin onto the tenant's own login page — so it is refused rather than sanitized.
+   */
+  it('refuses an SVG, whatever the file is called', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>').toString(
+      'base64',
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/branding/logos',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { fileName: 'logo.png', data: `data:image/png;base64,${svg}` },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('branding.logo_unsupported_type');
+  });
+
+  it('returns the same asset when the same file is uploaded twice', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const upload = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/branding/logos',
+        headers: { cookie, 'x-csrf-token': csrf },
+        payload: { fileName: 'logo.png', data: TINY_PNG },
+      });
+
+    const first = await upload();
+    const second = await upload();
+    expect(second.statusCode).toBe(200);
+    expect(second.json().logo.id).toBe(first.json().logo.id);
+
+    const { logos } = (
+      await app.inject({ method: 'GET', url: '/api/v1/admin/branding/logos', headers: { cookie } })
+    ).json();
+    expect(logos).toHaveLength(1);
+  });
+
+  it('cannot be selected from another tenant’s gallery', async () => {
+    const mine = await loginAdmin(tenant.slug);
+    const theirs = await loginAdmin(other.slug);
+
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/branding/logos',
+      headers: { cookie: theirs.cookie, 'x-csrf-token': theirs.csrf },
+      payload: { fileName: 'theirs.png', data: TINY_PNG },
+    });
+    const foreignId = upload.json().logo.id;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/branding/logo',
+      headers: { cookie: mine.cookie, 'x-csrf-token': mine.csrf },
+      payload: { logoId: foreignId },
+    });
+    // Not found, never forbidden: confirming the row exists elsewhere is itself the leak.
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('leaves the organization with no logo when the chosen one is deleted', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/branding/logos',
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { fileName: 'logo.png', data: TINY_PNG, activate: true },
+    });
+    const logoId = upload.json().logo.id;
+
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/admin/branding/logos/${logoId}`,
+      headers: { cookie, 'x-csrf-token': csrf },
+    });
+    expect(deleted.statusCode).toBe(204);
+
+    const branding = await prisma.organizationBranding.findUnique({
+      where: { organizationId: tenant.organizationId },
+      select: { logoAssetId: true },
+    });
+    expect(branding?.logoAssetId ?? null).toBeNull();
+  });
+});
+
+describe('changing an administrator’s email', () => {
+  it('moves the login identity and ends the sessions issued to the old one', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const members = (
+      await app.inject({ method: 'GET', url: '/api/v1/admin/members', headers: { cookie } })
+    ).json().members;
+    const self = members.find((member: { isSelf: boolean }) => member.isSelf);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/members/${self.id}/email`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { email: 'nov.admin@example.test' },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().signedOut).toBe(true);
+
+    // The identity changed, so the session that made the change is no longer valid.
+    const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie } });
+    expect(me.statusCode).toBe(401);
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: 'nov.admin@example.test', password: 'integration-test-pass' },
+    });
+    expect(login.statusCode).toBe(200);
+  });
+
+  it('refuses an address another account already holds', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    const members = (
+      await app.inject({ method: 'GET', url: '/api/v1/admin/members', headers: { cookie } })
+    ).json().members;
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/members/${members[0].id}/email`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { email: `admin@${other.slug}.test` },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe('auth.email_taken');
+  });
+
+  it('cannot reach a member of another organization', async () => {
+    const mine = await loginAdmin(tenant.slug);
+    const theirs = await loginAdmin(other.slug);
+    const theirMembers = (
+      await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/members',
+        headers: { cookie: theirs.cookie },
+      })
+    ).json().members;
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/members/${theirMembers[0].id}/email`,
+      headers: { cookie: mine.cookie, 'x-csrf-token': mine.csrf },
+      payload: { email: 'takeover@example.test' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('refuses to touch an account that administers the platform', async () => {
+    const { cookie, csrf } = await loginAdmin(tenant.slug);
+    await prisma.user.update({
+      where: { id: tenant.adminUserId },
+      data: { isPlatformAdmin: true },
+    });
+
+    const members = (
+      await app.inject({ method: 'GET', url: '/api/v1/admin/members', headers: { cookie } })
+    ).json().members;
+    const self = members.find((member: { isSelf: boolean }) => member.isSelf);
+    expect(self.isPlatformAdmin).toBe(true);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/members/${self.id}/email`,
+      headers: { cookie, 'x-csrf-token': csrf },
+      payload: { email: 'platform@example.test' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('members.platform_admin_immutable');
+  });
+});

@@ -202,12 +202,22 @@ export function requestLocationPermission(): Promise<'granted' | 'denied' | 'una
   });
 }
 
-/** The wording for what happens when the screen goes off. Never a promise the platform breaks. */
-export const BACKGROUND_NOTICE: Readonly<Record<BackgroundCapability, string>> = {
-  NATIVE: 'Записът продължава и при заключен екран.',
-  WAKE_LOCK:
-    'Записът работи, докато екранът е включен. AYtracker го задържа буден, докато си на работа.',
-  FOREGROUND_ONLY:
-    'Дръж AYtracker отворен, за да се записва. Прекъсванията се отбелязват на маршрута.',
-  NONE: 'Това устройство не поддържа проследяване на местоположението.',
-};
+/**
+ * What to tell the person about the screen going off. Never a promise the platform will not keep.
+ *
+ * Takes the application's name rather than hardcoding one: this product is white-label, and to
+ * the worker reading this the application is their employer's — it is that name on the bar above
+ * the text, so it has to be that name in the sentence too.
+ */
+export function backgroundNotice(capability: BackgroundCapability, appName: string): string {
+  switch (capability) {
+    case 'NATIVE':
+      return 'Записът продължава и при заключен екран.';
+    case 'WAKE_LOCK':
+      return `Записът работи, докато екранът е включен. ${appName} го задържа буден, докато си на работа.`;
+    case 'FOREGROUND_ONLY':
+      return `Дръж ${appName} отворен, за да се записва. Прекъсванията се отбелязват на маршрута.`;
+    case 'NONE':
+      return 'Това устройство не поддържа проследяване на местоположението.';
+  }
+}

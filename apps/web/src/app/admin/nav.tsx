@@ -4,6 +4,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { NavItem, Sidebar, SidebarSection } from '@aytracker/ui';
 import { authApi } from '../../lib/auth';
+import { PRODUCT_NAME } from '../../lib/brand';
+import { BrandMark } from '../../components/brand-mark';
 import { useSession } from './auth-guard';
 import {
   IconDashboard,
@@ -60,7 +62,7 @@ const FLEET: readonly Entry[] = [
   { href: '/admin/geofences', label: 'Геозони', icon: IconGeofence },
 ];
 
-const CONFIGURATION: readonly Entry[] = [
+const ORGANIZATION: readonly Entry[] = [
   { href: '/admin/settings', label: 'Настройки', icon: IconSettings },
 ];
 
@@ -84,12 +86,16 @@ export function AdminNav() {
   return (
     <Sidebar
       brand={
-        <>
-          <span className="ay-sidebar-mark" aria-hidden="true">
-            A
-          </span>
-          <span style={{ fontWeight: 650, letterSpacing: '-0.01em' }}>AYTRACKER</span>
-        </>
+        /*
+          The customer's name and logo, not ours. An admin looking at this sidebar is looking at
+          their own company's software; the product's name belongs on the invoice and on the
+          sign-up page, not above a shift roster. `organizationName` comes from the session, so it
+          is already resolved — branding name first, registered name otherwise.
+        */
+        <BrandMark
+          name={session.organizationName ?? PRODUCT_NAME}
+          logoUrl={session.organizationLogoUrl}
+        />
       }
     >
       {group(OVERVIEW)}
@@ -97,8 +103,8 @@ export function AdminNav() {
       {group(PEOPLE)}
       <SidebarSection>Автопарк</SidebarSection>
       {group(FLEET)}
-      <SidebarSection>Фирма</SidebarSection>
-      {group(CONFIGURATION)}
+      <SidebarSection>Организация</SidebarSection>
+      {group(ORGANIZATION)}
 
       <div style={{ flex: 1 }} />
 

@@ -1,4 +1,5 @@
-import type { FastifyPluginAsync } from 'fastify';
+import { createHash } from 'node:crypto';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { PERMISSIONS, assertPermission, hashPin } from '@aytracker/auth';
 import { FEATURES } from '@aytracker/billing';
 import { ConflictError, NotFoundError, ValidationError } from '@aytracker/domain';
@@ -15,12 +16,18 @@ import {
   createVehicleSchema,
   createWorkAreaSchema,
   createWorkerSchema,
+  selectLogoSchema,
   updateGeofenceSchema,
+  updateMemberEmailSchema,
   updateOperationalSettingsSchema,
+  updateOrganizationProfileSchema,
   updatePositionSchema,
   updateWorkAreaSchema,
   updateWorkerSchema,
+  uploadLogoSchema,
 } from '@aytracker/validation';
+import { displayName, logoAssetUrl } from '../lib/branding.js';
+import { MAX_LOGO_BYTES, decodeBase64Image, sniffImageType } from '../lib/image.js';
 import { deriveCode } from '../lib/slug.js';
 import type { AppServices } from '../services/container.js';
 
@@ -1202,14 +1209,437 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       });
 
       return {
-        companyName: organization.branding?.companyName ?? organization.name,
+        companyName: displayName(organization, organization.branding),
         slug: organization.slug,
         // Null, never a fallback hex. A default here would silently replace the product palette
         // for every tenant that has branded nothing — see packages/ui/src/brand/tokens.ts.
         primaryColor: organization.branding?.primaryColor ?? null,
         loginMessage: organization.branding?.loginMessage ?? null,
         customDomain: organization.branding?.customDomain ?? null,
-        logoUrl: organization.branding?.logoUrl ?? null,
+        logoUrl: resolveLogoUrl(services, organization.branding),
+      };
+    });
+
+    /* ------------------------------------------------------ organization ---- */
+
+    /**
+     * The organization as its own admin sees it.
+     *
+     * The slug is here and is read-only, which is the whole point of showing it: it is what every
+     * worker in the building types to sign in, so an admin needs to be able to read it out — and
+     * must not be able to change it from a settings form, because doing so locks out everybody
+     * holding the old one.
+     */
+    app.get('/organization', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.ORGANIZATION_READ);
+
+      const organization = await services.prisma.organization.findUniqueOrThrow({
+        where: { id: actor.organizationId },
+        select: {
+          name: true,
+          legalName: true,
+          slug: true,
+          status: true,
+          countryCode: true,
+          defaultTimezone: true,
+          trialEndsAt: true,
+          createdAt: true,
+          branding: { select: { companyName: true, logoAssetId: true } },
+        },
+      });
+
+      return {
+        organization: {
+          name: organization.name,
+          legalName: organization.legalName,
+          slug: organization.slug,
+          status: organization.status,
+          countryCode: organization.countryCode,
+          timezone: organization.defaultTimezone,
+          trialEndsAt: organization.trialEndsAt?.toISOString() ?? null,
+          createdAt: organization.createdAt.toISOString(),
+          displayName: displayName(organization, organization.branding),
+          logoUrl: resolveLogoUrl(services, organization.branding),
+        },
+      };
+    });
+
+    /**
+     * Renaming the organization.
+     *
+     * The name is not decoration: it is what the sidebar, both login screens and every portal
+     * header show, replacing the product name, so this one field re-brands the whole tenant. It
+     * is audited for that reason — "why does it say something else this morning" has to have an
+     * answer.
+     */
+    app.patch('/organization', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.ORGANIZATION_UPDATE);
+      const body = updateOrganizationProfileSchema.parse(request.body);
+
+      const before = await services.prisma.organization.findUniqueOrThrow({
+        where: { id: actor.organizationId },
+        select: { name: true, legalName: true },
+      });
+
+      const organization = await services.prisma.organization.update({
+        where: { id: actor.organizationId },
+        data: {
+          ...(body.name === undefined ? {} : { name: body.name }),
+          ...(body.legalName === undefined ? {} : { legalName: body.legalName || null }),
+        },
+        select: {
+          name: true,
+          legalName: true,
+          slug: true,
+          branding: { select: { companyName: true, logoAssetId: true } },
+        },
+      });
+
+      await recordAudit(services, request, actor, {
+        action: 'organization.updated',
+        entityType: 'organization',
+        entityId: actor.organizationId,
+        metadata: {
+          before: { name: before.name, legalName: before.legalName },
+          after: { name: organization.name, legalName: organization.legalName },
+        },
+      });
+
+      return {
+        organization: {
+          name: organization.name,
+          legalName: organization.legalName,
+          slug: organization.slug,
+          displayName: displayName(organization, organization.branding),
+          logoUrl: resolveLogoUrl(services, organization.branding),
+        },
+      };
+    });
+
+    /* ------------------------------------------------------------- logos ---- */
+
+    /** Every logo this organization has uploaded, newest first, with the chosen one marked. */
+    app.get('/branding/logos', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.BRANDING_READ);
+
+      const [logos, branding] = await Promise.all([
+        services.prisma.organizationLogo.findMany({
+          where: { organizationId: actor.organizationId },
+          // `data` is deliberately absent: a gallery of ten logos must not pull five megabytes of
+          // bytes through the API to render ten thumbnails that are fetched by URL anyway.
+          select: {
+            id: true,
+            fileName: true,
+            contentType: true,
+            byteSize: true,
+            createdAt: true,
+            uploadedBy: { select: { firstName: true, lastName: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 60,
+        }),
+        services.prisma.organizationBranding.findUnique({
+          where: { organizationId: actor.organizationId },
+          select: { logoAssetId: true },
+        }),
+      ]);
+
+      return {
+        activeLogoId: branding?.logoAssetId ?? null,
+        logos: logos.map((logo) => ({
+          id: logo.id,
+          fileName: logo.fileName,
+          contentType: logo.contentType,
+          byteSize: logo.byteSize,
+          createdAt: logo.createdAt.toISOString(),
+          uploadedBy: logo.uploadedBy
+            ? `${logo.uploadedBy.firstName ?? ''} ${logo.uploadedBy.lastName ?? ''}`.trim() || null
+            : null,
+          url: logoAssetUrl(services.config.env.API_URL, logo.id),
+          isActive: logo.id === (branding?.logoAssetId ?? null),
+        })),
+      };
+    });
+
+    /**
+     * Uploading a logo.
+     *
+     * The declared file type is not read at all — the bytes decide, and anything that is not a
+     * PNG, JPEG, GIF or WebP is refused rather than stored. An SVG loses here on purpose: it is a
+     * script container, and this asset is served from our own origin onto the tenant's login
+     * page. See `lib/image.ts` and docs/white-label.md § 4.
+     *
+     * Re-uploading a file the organization already has returns the existing asset instead of a
+     * second copy. An admin who uploads the same logo twice meant to select it, not to collect it.
+     */
+    app.post('/branding/logos', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.BRANDING_UPDATE);
+      const body = uploadLogoSchema.parse(request.body);
+
+      const bytes = decodeBase64Image(body.data);
+      if (!bytes) {
+        throw new ValidationError('branding.logo_unreadable', 'That file could not be read.');
+      }
+      if (bytes.byteLength > MAX_LOGO_BYTES) {
+        throw new ValidationError(
+          'branding.logo_too_large',
+          `A logo may be at most ${Math.floor(MAX_LOGO_BYTES / 1024)} KB.`,
+        );
+      }
+
+      const contentType = sniffImageType(bytes);
+      if (!contentType) {
+        throw new ValidationError(
+          'branding.logo_unsupported_type',
+          'Use a PNG, JPEG, WebP or GIF image. SVG files are not accepted.',
+        );
+      }
+
+      const checksum = createHash('sha256').update(bytes).digest('hex');
+
+      const existing = await services.prisma.organizationLogo.findUnique({
+        where: { organizationId_checksum: { organizationId: actor.organizationId, checksum } },
+        select: { id: true, fileName: true, contentType: true, byteSize: true, createdAt: true },
+      });
+
+      const logo =
+        existing ??
+        (await services.prisma.organizationLogo.create({
+          data: {
+            organizationId: actor.organizationId,
+            fileName: body.fileName,
+            contentType,
+            byteSize: bytes.byteLength,
+            checksum,
+            data: Buffer.from(bytes),
+            uploadedByUserId: actor.userId ?? null,
+          },
+          select: { id: true, fileName: true, contentType: true, byteSize: true, createdAt: true },
+        }));
+
+      if (body.activate) {
+        await selectLogo(services, actor.organizationId, logo.id);
+      }
+
+      await recordAudit(services, request, actor, {
+        action: existing ? 'branding.logo_reused' : 'branding.logo_uploaded',
+        entityType: 'organization_logo',
+        entityId: logo.id,
+        metadata: {
+          fileName: logo.fileName,
+          contentType,
+          byteSize: logo.byteSize,
+          activated: body.activate,
+        },
+      });
+
+      return reply.status(existing ? 200 : 201).send({
+        logo: {
+          id: logo.id,
+          fileName: logo.fileName,
+          contentType: logo.contentType,
+          byteSize: logo.byteSize,
+          createdAt: logo.createdAt.toISOString(),
+          url: logoAssetUrl(services.config.env.API_URL, logo.id),
+          isActive: body.activate,
+        },
+      });
+    });
+
+    /**
+     * Choosing which uploaded logo the organization shows.
+     *
+     * `logoId: null` clears it, and clearing is a real choice rather than an undo: a tenant that
+     * has decided to show no logo falls back to its initial and its name, not to the product's.
+     */
+    app.post('/branding/logo', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.BRANDING_UPDATE);
+      const body = selectLogoSchema.parse(request.body);
+
+      if (body.logoId !== null) {
+        // Scoped by organization in the query itself: another tenant's logo id is *not found*
+        // here, never "forbidden", because confirming it exists elsewhere is itself the leak.
+        const owned = await services.prisma.organizationLogo.findFirst({
+          where: { id: body.logoId, organizationId: actor.organizationId },
+          select: { id: true },
+        });
+        if (!owned) throw new NotFoundError('branding.logo_not_found', 'No such logo.');
+      }
+
+      await selectLogo(services, actor.organizationId, body.logoId);
+
+      await recordAudit(services, request, actor, {
+        action: 'branding.logo_selected',
+        entityType: 'organization_logo',
+        entityId: body.logoId,
+        metadata: { logoId: body.logoId },
+      });
+
+      return {
+        activeLogoId: body.logoId,
+        logoUrl: body.logoId ? logoAssetUrl(services.config.env.API_URL, body.logoId) : null,
+      };
+    });
+
+    /** Removing an uploaded logo. Deleting the chosen one leaves the organization with none. */
+    app.delete('/branding/logos/:logoId', async (request, reply) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.BRANDING_UPDATE);
+      const { logoId } = request.params as { logoId: string };
+
+      const logo = await services.prisma.organizationLogo.findFirst({
+        where: { id: logoId, organizationId: actor.organizationId },
+        select: { id: true, fileName: true },
+      });
+      if (!logo) throw new NotFoundError('branding.logo_not_found', 'No such logo.');
+
+      // The foreign key is ON DELETE SET NULL, so the branding row is cleared by the database
+      // rather than by a second statement that could be skipped or fail on its own.
+      await services.prisma.organizationLogo.delete({ where: { id: logo.id } });
+
+      await recordAudit(services, request, actor, {
+        action: 'branding.logo_deleted',
+        entityType: 'organization_logo',
+        entityId: logo.id,
+        metadata: { fileName: logo.fileName },
+      });
+
+      return reply.status(204).send();
+    });
+
+    /* ----------------------------------------------------------- members ---- */
+
+    /**
+     * The people with a management seat in this organization.
+     *
+     * Members, not users: the same person may hold accounts in several organizations, and this
+     * tenant may only see the membership it owns. Nothing here reaches a user outside it.
+     */
+    app.get('/members', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.USERS_MANAGE);
+
+      const members = await services.prisma.organizationMember.findMany({
+        where: { organizationId: actor.organizationId },
+        select: {
+          id: true,
+          status: true,
+          joinedAt: true,
+          role: { select: { code: true, name: true } },
+          user: {
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+              isActive: true,
+              isPlatformAdmin: true,
+              lastLoginAt: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 200,
+      });
+
+      return {
+        members: members.map((member) => ({
+          id: member.id,
+          userId: member.user.id,
+          email: member.user.email,
+          firstName: member.user.firstName,
+          lastName: member.user.lastName,
+          roleCode: member.role.code,
+          roleName: member.role.name,
+          status: member.status,
+          isActive: member.user.isActive,
+          /**
+           * Whether this account is also a platform administrator — someone who administers
+           * AYtracker itself, not this organization. The email of such an account is not the
+           * tenant's to change, and the screen has to be able to say so rather than offering a
+           * button that will be refused.
+           */
+          isPlatformAdmin: member.user.isPlatformAdmin,
+          isSelf: member.user.id === actor.userId,
+          lastLoginAt: member.user.lastLoginAt?.toISOString() ?? null,
+          joinedAt: member.joinedAt?.toISOString() ?? null,
+        })),
+      };
+    });
+
+    /**
+     * Changing an organization administrator's email address.
+     *
+     * The address *is* the login identity, so this is an account change and not a profile edit,
+     * and three limits follow from that:
+     *
+     *   * **Only a member of this organization.** The row is found by (id, organizationId); a
+     *     membership elsewhere is not found, so no tenant can reach another tenant's user.
+     *   * **Never a platform administrator.** That account administers the product, not this
+     *     customer, and letting a tenant admin move its login address would hand them the
+     *     platform.
+     *   * **The target's sessions end.** `credentialsChangedAt` is what invalidates sessions
+     *     issued before it, and an identity change is exactly the case it exists for — including
+     *     when an admin changes their own address, which signs them out here and back in as who
+     *     they now are.
+     */
+    app.patch('/members/:memberId/email', async (request) => {
+      const actor = app.requireAuth(request);
+      assertPermission(actor, PERMISSIONS.USERS_MANAGE);
+      const { memberId } = request.params as { memberId: string };
+      const body = updateMemberEmailSchema.parse(request.body);
+
+      const member = await services.prisma.organizationMember.findFirst({
+        where: { id: memberId, organizationId: actor.organizationId },
+        select: { id: true, user: { select: { id: true, email: true, isPlatformAdmin: true } } },
+      });
+      if (!member) throw new NotFoundError('members.not_found', 'No such member.');
+
+      if (member.user.isPlatformAdmin) {
+        throw new ValidationError(
+          'members.platform_admin_immutable',
+          'This account administers the platform; its email is not managed here.',
+        );
+      }
+
+      if (member.user.email === body.email) {
+        return { member: { id: member.id, email: member.user.email }, signedOut: false };
+      }
+
+      const taken = await services.prisma.user.findUnique({
+        where: { email: body.email },
+        select: { id: true },
+      });
+      if (taken) {
+        throw new ConflictError('auth.email_taken', 'That email address is already registered.');
+      }
+
+      const previousEmail = member.user.email;
+      const now = services.clock.now();
+
+      await services.prisma.user.update({
+        where: { id: member.user.id },
+        data: { email: body.email, credentialsChangedAt: now },
+      });
+
+      await recordAudit(services, request, actor, {
+        action: 'member.email_changed',
+        entityType: 'organization_member',
+        entityId: member.id,
+        // The old address is kept because "who moved this account, and from where" is the whole
+        // question when an account changes hands.
+        metadata: { userId: member.user.id, before: previousEmail, after: body.email },
+      });
+
+      return {
+        member: { id: member.id, email: body.email },
+        /** True when the caller just signed themselves out. The screen has to act on it. */
+        signedOut: member.user.id === actor.userId,
       };
     });
 
@@ -1809,6 +2239,69 @@ export function adminRoutes(services: AppServices): FastifyPluginAsync {
       };
     });
   };
+}
+
+/**
+ * Writes the chosen logo onto the branding row, creating that row if the organization has never
+ * branded anything.
+ *
+ * An upsert rather than an update: `OrganizationBranding` is created lazily, so the first logo a
+ * customer picks is very often the first branding they have set at all.
+ */
+async function selectLogo(
+  services: AppServices,
+  organizationId: OrganizationId,
+  logoId: string | null,
+): Promise<void> {
+  await services.prisma.organizationBranding.upsert({
+    where: { organizationId },
+    create: { organizationId, logoAssetId: logoId },
+    update: { logoAssetId: logoId },
+  });
+}
+
+/** The chosen logo's URL, falling back to an externally hosted one for a customer who has one. */
+function resolveLogoUrl(
+  services: AppServices,
+  branding: { logoAssetId?: string | null; logoUrl?: string | null } | null,
+): string | null {
+  if (branding?.logoAssetId) return logoAssetUrl(services.config.env.API_URL, branding.logoAssetId);
+  return branding?.logoUrl ?? null;
+}
+
+/**
+ * One audit row, written after the change it describes.
+ *
+ * Deliberately not inside the transaction that made the change: an audit write that can fail the
+ * operation turns a logging problem into an outage, and the operations recorded here are settings
+ * changes rather than money. The trade is that a crash between the two loses the record, which is
+ * why the *content* of the change is also visible in the row it changed.
+ */
+async function recordAudit(
+  services: AppServices,
+  request: FastifyRequest,
+  actor: { organizationId: OrganizationId; userId?: string | undefined },
+  entry: {
+    action: string;
+    entityType: string;
+    entityId: string | null;
+    metadata: Record<string, unknown>;
+  },
+): Promise<void> {
+  await services.prisma.auditLog.create({
+    data: {
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId ?? null,
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      metadata: entry.metadata as never,
+      ipAddress: request.ip,
+      userAgent:
+        typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+      requestId: request.id,
+    },
+  });
 }
 
 /**
