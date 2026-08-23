@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // The seed sits beside `src`, not under it, so `rootDir` cannot cover both. It is not
+    // compiled — `tsx` runs it — so nothing is emitted here and there is no layout to preserve.
+    "rootDir": ".."
+  },
+  // `tsconfig.json` builds `src` and nothing else, which left the seed unchecked by anything.
+  // It rotted exactly as you would expect: it went on writing `prisma.tripLocationPoint` and
+  // omitting `trackingSessionId` for a month after the migration that renamed the one and made
+  // the other required, and the only thing that ever noticed was running it.
+  "include": ["src/**/*", "prisma/**/*"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/**/*.spec.ts"]
+}

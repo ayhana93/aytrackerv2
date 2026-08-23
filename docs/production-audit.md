@@ -2,7 +2,7 @@
 
 A targeted audit of AYtracker v2 at commit `b40017a`. The brief was to inspect before changing,
 fix only concrete defects, and leave correct code alone. Most of what was inspected was correct
-and is listed as such; seven things were wrong and were fixed.
+and is listed as such; nine things were wrong and were fixed.
 
 Baseline before this audit: 342 unit tests, 190 integration tests, all passing. After: 348 unit,
 201 integration, all passing.
@@ -264,6 +264,35 @@ set `REDIS_URL` had every reason to believe otherwise.
 when `REDIS_URL` is set while rate limiting is in-process. Wiring the shared store is a dependency
 and a deployment decision rather than a bug fix; it is tracked below.
 
+### 9. The demo seed had been broken for a month, and CI was verifying the half that cannot break
+
+**Problem.** Found while checking that fix 2's unique index did not break the CI seed step. It
+could not have: `SEED_DEMO=true pnpm db:seed` crashed long before reaching any location point.
+
+`packages/database/tsconfig.json` has `include: ["src/**/*"]`, and the seed lives in `prisma/`. So
+nothing typechecked it. It rotted exactly as you would expect: the `tracking_sessions` migration
+renamed `trip_location_points` to `location_points` and made `TrackingEvent.trackingSessionId`
+required, and the seed went on writing `prisma.tripLocationPoint` and omitting `trackingSessionId`.
+Five type errors, none of them visible to anything.
+
+CI's "Verify the seed runs" step did not catch it because it runs without `SEED_DEMO`, so the seed
+returns after the platform reference data and never touches a tenant. A step that verifies the half
+that cannot break is not verification.
+
+**Why it mattered.** A developer following the setup path with demo data got a crash and an
+incomplete tenant. And the underlying hole is the interesting part: a whole file excluded from every
+check in the repository, in the package that owns the schema.
+
+**What changed.** The seed builds the `TrackingSession` that owns the trip's points and events —
+which is the schema expressing the privacy rule, so the seed has to obey it for the same reason the
+application does — and carries the measured distance onto it rather than leaving two numbers for one
+track free to disagree. `tsconfig.typecheck.json` brings `prisma/` into the typecheck. CI's seed step
+runs with `SEED_DEMO=true`.
+
+**Tests.** Verified against a fresh database: migrations, demo seed, 276 points on one session with
+the deliberate 19-minute gap intact, and a second run still idempotent. The typecheck is the
+regression guard.
+
 ---
 
 ## Remaining Issues
@@ -403,7 +432,9 @@ risk is retention, not query shape.
 **Testing:** Unusually good. 549 tests, and the integration suite tests behaviour rather than
 implementation — including the properties that would otherwise silently rot, like the database
 catalog and the absence of a pause endpoint. Every fix in this audit landed with a regression test
-that fails against the old code.
+that fails against the old code. The one weak spot found was the reverse of the usual one: not a
+missing test but a file excluded from every check (fix 9), and a CI step that exercised the branch
+that could not fail. Both are closed.
 
 **Deployment:** The weakest area, and the reason several items above are HIGH rather than MEDIUM.
 There is no scheduler, rate limiting does not survive horizontal scaling, and RLS depends on a
