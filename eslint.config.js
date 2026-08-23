@@ -124,4 +124,24 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
     },
   },
+  {
+    /*
+     * The service worker runs in a worker global scope, not a window.
+     *
+     * `self`, `caches`, `clients` and `skipWaiting` are all real there and all absent from the
+     * browser globals ESLint assumes for everything else in `apps/web`. Declared here rather than
+     * silenced with per-line comments, because the file is genuinely a different runtime.
+     */
+    files: ['apps/web/public/sw.js'],
+    languageOptions: {
+      globals: {
+        self: 'readonly',
+        caches: 'readonly',
+        clients: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+        Promise: 'readonly',
+      },
+    },
+  },
 );

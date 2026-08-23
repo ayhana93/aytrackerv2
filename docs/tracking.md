@@ -13,7 +13,7 @@ than two. Read that one first if you are trying to understand the shape.
 ## 1. Pipeline
 
 ```
-Worker or driver device       (web collector, or apps/mobile for background)
+Worker or driver device       (browser, or the same app installed to the home screen)
    │  adaptive sampling (device-side, floor set by the server)
    ▼
 POST /api/v1/tracking/points          rate limited, entitlement-gated
@@ -198,8 +198,9 @@ thing independently — a promise is worth more when the operating system enforc
   employee is still at work — but ending the shift does, and the next batch is refused.
 - There is no pause. See §4.2: a driver who could pause and then cover a hundred kilometres would
   make the fuel figure meaningless.
-- The background mode in `apps/mobile` exists so recording survives the screen locking. It runs
-  only inside a session, has no boot receiver and no idle service, and discards simulated fixes.
+- This is a web product, so recording needs the screen on — a Screen Wake Lock keeps it on while a
+  session is open. Installing the app to the home screen does not change that; it makes Android
+  slower to shut the app down, which is a longer grace period, not a background permission.
 
 ---
 

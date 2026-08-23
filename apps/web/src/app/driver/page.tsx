@@ -29,6 +29,7 @@ import {
 } from '../../lib/driver';
 import { PRODUCT_NAME, useRememberedBrand } from '../../lib/brand';
 import { BrandMark } from '../../components/brand-mark';
+import { InstallCard } from '../../components/install-card';
 
 /**
  * Driver portal.
@@ -288,6 +289,8 @@ function ActiveTrip({
 
   return (
     <>
+      <InstallCard appName={appName} />
+
       <div>
         <h1 className="ay-h1">
           Здравей, {state.driver?.firstName ?? state.driver?.code ?? 'шофьор'}!

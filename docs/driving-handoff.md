@@ -227,11 +227,12 @@ anywhere in this flow.
 The user requirement is that the app records the route "дори с изгасен дисплей на заключено
 устройство" — even with the display off on a locked device.
 
-**A web PWA cannot do this**, and the code does not pretend otherwise. The driver portal reads
-`detectCapabilities()` and states what will actually happen on that device before the trip starts.
-Delivering it for real needs the native wrapper: Capacitor with a background-location plugin, iOS
-"Always" authorization, and an Android foreground service. The complete configuration is in
-[tracking-client.md §5](./tracking-client.md#5-native-configuration--the-part-that-makes-screen-off-recording-real).
+**A web app cannot do this**, and the code does not pretend otherwise. This product is web-based
+by decision, so the driver portal reads `detectCapabilities()` and states what will actually happen
+on that device before the trip starts: recording needs the screen on, and a Screen Wake Lock keeps
+it on. Installing the app to the home screen helps — Android is slower to shut it down — but it
+grants no background-location permission. See
+[tracking-client.md §1](./tracking-client.md#1-the-honest-answer-about-a-locked-screen).
 
 Whichever the device is, silence is treated the same way: it becomes a tracking gap, reported
 neutrally as "app no longer reporting". **A gap is never presented as the driver having

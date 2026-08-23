@@ -86,9 +86,8 @@ optionally a feature flag. It does not mean editing unrelated modules. See
 ```
 AYtracker/
 ├── apps/
-│   ├── web/                  Next.js — admin, worker and driver portals (PWA)
-│   ├── api/                  Fastify — the only writer of business state
-│   └── mobile/               Capacitor shell — background GPS only, no screens of its own
+│   ├── web/                  Next.js — admin, worker and driver portals; installable PWA
+│   └── api/                  Fastify — the only writer of business state
 ├── packages/
 │   ├── types/                branded ids, actor context. No runtime deps.
 │   ├── config/               environment schema, parsed once at boot

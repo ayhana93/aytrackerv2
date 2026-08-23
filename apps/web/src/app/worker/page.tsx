@@ -36,6 +36,7 @@ import {
 } from '../../lib/worker';
 import { PRODUCT_NAME, useRememberedBrand } from '../../lib/brand';
 import { BrandMark } from '../../components/brand-mark';
+import { InstallCard } from '../../components/install-card';
 
 /**
  * Worker portal.
@@ -619,6 +620,12 @@ function NoShift({
 
   return (
     <>
+      {/*
+        Offered here and nowhere else: before a shift there is room and nothing urgent, and a
+        worker who is mid-shift should be looking at their hours, not at a banner.
+      */}
+      <InstallCard appName={appName} />
+
       <Card>
         <p className="ay-overline ay-muted">Смяна</p>
         <p className="ay-small" style={{ marginTop: 'var(--ay-space-2)' }}>

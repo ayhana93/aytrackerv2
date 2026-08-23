@@ -23,28 +23,26 @@
  *   Background Sync One-shot, fires on reconnect. Useful for *flushing* the queue, not for
  *                   *collecting* points.
  *
- * So there are exactly two ways to record a trip while the phone is in a pocket:
+ * This product is web-based, so there is exactly one way to record while the phone is in a
+ * pocket: **the Screen Wake Lock** — keep the display on. It works, the screen stays lit and the
+ * battery drains faster. That is the honest trade, and the portal states it before a shift
+ * starts rather than letting a driver discover it at the end of the day.
  *
- *   1. **Screen Wake Lock** — keep the display on. Works, but the driver's screen stays lit and
- *      the battery drains. Honest, available today, and the right default for a short trip.
+ * Installing the app to the home screen does not change what the platform permits. It does make
+ * the app survive being backgrounded longer on Android, and it gives a worker an icon to tap
+ * instead of a URL to remember, which is why the portal offers it.
  *
- *   2. **A native wrapper** — Capacitor or similar, with a background-location plugin, an
- *      Android foreground service and iOS "Always" location authorization. This is the only way
- *      to get true background collection. See docs/tracking-client.md for the configuration.
- *
- * This module reports which of those is available so the interface can tell the driver the
- * truth rather than promising something the platform will not deliver. A driver who believes
- * their route is being recorded, and finds out at the end of the day that it was not, is worse
- * off than one who was told up front.
+ * There is deliberately no native-wrapper branch here. A code path that reports "recording
+ * continues with the screen off" is a lie in a web product, and an unreachable one is worse than
+ * none: it survives review because nobody runs it. If a native shell is ever built, this is a
+ * new `BackgroundCapability` and a new collector — not a dormant branch kept warm for years.
  *
  * Whatever happens, the server side is already honest about it: a period with no points becomes
  * a tracking gap, reported neutrally as "app no longer reporting" — never as an accusation.
  */
 
 export type BackgroundCapability =
-  /** Native background location. Records with the screen off. */
-  | 'NATIVE'
-  /** Web only. Records while the screen is on; a wake lock can keep it on. */
+  /** Records while the screen is on; a wake lock can keep it on. The normal case. */
   | 'WAKE_LOCK'
   /** Web without wake lock support. Records only while the app is in the foreground. */
   | 'FOREGROUND_ONLY'
@@ -55,7 +53,15 @@ export interface TrackingCapabilities {
   readonly geolocation: boolean;
   readonly wakeLock: boolean;
   readonly permissionsApi: boolean;
-  readonly native: boolean;
+  /**
+   * Whether the app is running from the home screen rather than a browser tab.
+   *
+   * It does not change what the platform permits — an installed PWA still cannot collect with
+   * the screen off — but it changes how long the app survives being backgrounded on Android, and
+   * it is the difference between an icon a worker taps and a URL they have to remember. Worth
+   * knowing so the portal can suggest installing.
+   */
+  readonly installed: boolean;
   readonly background: BackgroundCapability;
   /**
    * Message key for what to tell the driver about screen-off behaviour. Resolved by the
@@ -64,75 +70,47 @@ export interface TrackingCapabilities {
   readonly backgroundNoticeKey: string;
 }
 
-/** The bridge a native wrapper injects. Absent in a plain browser. */
-export interface NativeTrackingBridge {
-  readonly version: string;
-  start(options: {
-    /** The tracking session, which may be a working day or a trip. */
-    sessionId: string;
-    minIntervalSeconds: number;
-    minDistanceMeters: number;
-  }): Promise<void>;
-  stop(): Promise<void>;
-  /** Points buffered by the OS while the app was not running. */
-  drain(): Promise<
-    readonly {
-      timestamp: number;
-      latitude: number;
-      longitude: number;
-      accuracy?: number;
-      speed?: number;
-      heading?: number;
-      altitude?: number;
-    }[]
-  >;
-  requestAlwaysAuthorization(): Promise<'granted' | 'denied' | 'restricted'>;
-}
-
-declare global {
-  interface Window {
-    AYtrackerNative?: NativeTrackingBridge;
-  }
-}
-
 export function detectCapabilities(): TrackingCapabilities {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return {
       geolocation: false,
       wakeLock: false,
       permissionsApi: false,
-      native: false,
+      installed: false,
       background: 'NONE',
       backgroundNoticeKey: 'tracking.background.unavailable',
     };
   }
 
-  const native = typeof window.AYtrackerNative?.start === 'function';
   const geolocation = 'geolocation' in navigator;
   const wakeLock = 'wakeLock' in navigator;
   const permissionsApi = 'permissions' in navigator;
+  /*
+   * `display-mode: standalone` covers Android and desktop; `navigator.standalone` is the iOS
+   * equivalent and exists nowhere else, which is why it is read off a widened type rather than
+   * added to the global Navigator.
+   */
+  const installed =
+    window.matchMedia?.('(display-mode: standalone)').matches === true ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
 
   const background: BackgroundCapability = !geolocation
     ? 'NONE'
-    : native
-      ? 'NATIVE'
-      : wakeLock
-        ? 'WAKE_LOCK'
-        : 'FOREGROUND_ONLY';
+    : wakeLock
+      ? 'WAKE_LOCK'
+      : 'FOREGROUND_ONLY';
 
   return {
     geolocation,
     wakeLock,
     permissionsApi,
-    native,
+    installed,
     background,
     backgroundNoticeKey: BACKGROUND_NOTICE_KEYS[background],
   };
 }
 
 const BACKGROUND_NOTICE_KEYS: Readonly<Record<BackgroundCapability, string>> = {
-  // "Recording continues with the screen off."
-  NATIVE: 'tracking.background.native',
   // "Keep the screen on to record the whole route. AYtracker will keep it awake."
   WAKE_LOCK: 'tracking.background.wake_lock',
   // "Keep AYtracker open to record the route. Gaps will be shown on the trip."

@@ -225,15 +225,15 @@ observes, never what it infers about intent.
 
 ## 10. Where it lives
 
-| Concern                                   | Location                                                        |
-| ----------------------------------------- | --------------------------------------------------------------- |
-| Geometry, states, sampling, fences, speed | `packages/tracking` — pure functions, no database               |
-| Sessions, admission, ingestion            | `modules/tracking`                                              |
-| What a trip _is_                          | `modules/drivers`                                               |
-| Ingestion endpoint                        | `apps/api/src/routes/tracking.ts`                               |
-| Live map and workforce reads              | `apps/api/src/routes/admin.ts`                                  |
-| Device collectors and the offline queue   | `packages/tracking-client`                                      |
-| Native shell                              | `apps/mobile` — see its README for what has _not_ been verified |
+| Concern                                   | Location                                                                           |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| Geometry, states, sampling, fences, speed | `packages/tracking` — pure functions, no database                                  |
+| Sessions, admission, ingestion            | `modules/tracking`                                                                 |
+| What a trip _is_                          | `modules/drivers`                                                                  |
+| Ingestion endpoint                        | `apps/api/src/routes/tracking.ts`                                                  |
+| Live map and workforce reads              | `apps/api/src/routes/admin.ts`                                                     |
+| Device collectors and the offline queue   | `packages/tracking-client`                                                         |
+| Installability, offline shell             | `apps/web/src/app/manifest.ts`, `apps/web/public/sw.js`, `apps/web/src/lib/pwa.ts` |
 
 `modules/drivers` no longer contains an ingestion path, a pause, or a location pipeline. It owns
 trips. That split is what stops the product growing a second pipeline the day somebody needs to

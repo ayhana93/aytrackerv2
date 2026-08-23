@@ -211,8 +211,6 @@ export function requestLocationPermission(): Promise<'granted' | 'denied' | 'una
  */
 export function backgroundNotice(capability: BackgroundCapability, appName: string): string {
   switch (capability) {
-    case 'NATIVE':
-      return 'Записът продължава и при заключен екран.';
     case 'WAKE_LOCK':
       return `Записът работи, докато екранът е включен. ${appName} го задържа буден, докато си на работа.`;
     case 'FOREGROUND_ONLY':

@@ -1,7 +1,10 @@
 # Tracking client
 
-How a route gets recorded on the device, what happens when the screen goes off, and what it takes
-to make "records with the display off on a locked phone" actually true.
+How a route gets recorded on the device, and what happens when the screen goes off.
+
+**This product is web-based.** That is a decision, not a gap, and it fixes what the recording can
+and cannot do. This document is about living with that honestly rather than about routing around
+it.
 
 The server side of tracking is in [tracking.md](./tracking.md). This document is only about the
 half that runs on the driver's phone: `packages/tracking-client`.
@@ -20,16 +23,16 @@ no service-worker trick and no manifest flag that changes this. The relevant pla
 | Periodic Background Sync               | Chrome only, requires installation, minimum interval around twelve hours. Useless for a trip.                                                                                                 |
 | Background Sync (one-shot)             | Fires on reconnect. Useful for _flushing_ a queue, not for _collecting_ points.                                                                                                               |
 
-So there are exactly two ways to keep recording while the phone is in a pocket:
+So there is exactly one way to keep recording while the phone is in a pocket: **the Screen Wake
+Lock** — keep the display on for the duration of the shift. It works in the browser today, the
+screen stays lit, the battery drains faster, and nothing is lost. That is the trade, and the
+portals state it before a shift starts.
 
-1. **Screen Wake Lock** — keep the display on for the duration of the trip. Available in the
-   browser today. The screen stays lit and the battery drains faster, but nothing is lost.
-2. **A native wrapper** — Capacitor with a background-location plugin, an Android foreground
-   service and iOS "Always" authorization. This is the only route to true background collection,
-   and section 5 is its full configuration.
+**Installing the app to the home screen does not change this.** It is worth doing for other
+reasons — see §5 — but an installed PWA is still web content and still gets no background-location
+permission. Any screen that implied otherwise would be making a promise the platform will break.
 
-`detectCapabilities()` reports which of these the current device has, and the driver portal states
-it plainly before the trip starts. This is deliberate. A driver who believes their route is being
+`detectCapabilities()` reports what the current device has, and the portals state it plainly. This is deliberate. A driver who believes their route is being
 recorded and discovers at the end of the week that it was not is worse off than one who was told
 up front — and the gap will surface as a dispute about their pay, which is the worst possible place
 to discover a platform limitation.
@@ -45,19 +48,22 @@ and a deliberate force-quit are indistinguishable from the outside. See
 ## 2. Shape of the package
 
 ```
-LocationCollector            the port the driver portal is written against
-   ├── WebLocationCollector      watchPosition + wake lock + IndexedDB queue
-   └── NativeLocationCollector   the injected native bridge + the same queue
+LocationCollector            the port both portals are written against
+   └── WebLocationCollector      watchPosition + wake lock + IndexedDB queue
 
-createLocationCollector()    picks one; native when a bridge is present
+createLocationCollector()    returns the web collector
 detectCapabilities()         what this device can do, for the UI to state
 PointQueue                   IndexedDB, with an in-memory fallback
 decideSampling()             re-exported from @aytracker/tracking
 ```
 
-The portal imports `createLocationCollector` and never branches on platform. Everything
-platform-specific is behind the port, which is what lets the same driver screen ship as a web app
-today and inside a native shell later without a rewrite.
+One implementation, and the port stays anyway: the portals are better off depending on the
+interface than on the class, and a collector is far easier to test through it.
+
+There is deliberately **no dormant native branch**. A code path that reports "recording continues
+with the screen off" is false in a web product, and an unreachable one is worse than none — it
+survives review indefinitely because nobody ever runs it. If a native shell is ever built, it
+arrives as a new capability and a new collector, not as a branch kept warm for years.
 
 ```ts
 import { createLocationCollector } from '@aytracker/tracking-client';
@@ -126,139 +132,52 @@ the network lied about failing is stored once.
 
 ---
 
-## 5. Native configuration — the part that makes screen-off recording real
+## 5. Installing it — what a PWA does and does not buy
 
-The bridge the native collector expects, injected on `window` as `AYtrackerNative`:
+The app is installable: `apps/web/src/app/manifest.ts` is the manifest, `apps/web/public/sw.js`
+the service worker, and `apps/web/src/lib/pwa.ts` the hook that registers one and offers the other.
 
-```ts
-interface NativeTrackingBridge {
-  readonly version: string;
-  start(options: {
-    tripId: string;
-    minIntervalSeconds: number;
-    minDistanceMeters: number;
-  }): Promise<void>;
-  stop(): Promise<void>;
-  /** Points the OS buffered while the web view was not running. */
-  drain(): Promise<readonly NativePoint[]>;
-  requestAlwaysAuthorization(): Promise<'granted' | 'denied' | 'restricted'>;
-}
-```
+**What installing does not do:** unlock background GPS. An installed PWA is still web content. It
+gets no background-location permission on either platform, and every notice in the portals says so.
 
-`drain()` is the important one. The OS keeps delivering fixes to the native layer while the web
-view is suspended; the collector polls the buffer every fifteen seconds when it is alive, and
-drains it on start and stop. Those points enter the same IndexedDB queue as live fixes and are
-uploaded identically.
+**What it does do**, all of which matters on a shift:
 
-### Capacitor
+|                          |                                                                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An icon instead of a URL | Nobody types an address at 05:40 in a yard. This is the single biggest reason field staff actually open the app.                                                                                                    |
+| Its own task on Android  | An installed app is backgrounded far less aggressively than a tab. The stretch between locking the screen and the recording stopping is longer, and the app is much less likely to be discarded outright mid-shift. |
+| No browser chrome        | A URL bar and a tab strip cost about a fifth of a phone screen on a full-screen control surface.                                                                                                                    |
+| Home-screen shortcuts    | Long-press goes straight to "Моята смяна" or "Курс".                                                                                                                                                                |
 
-```bash
-pnpm add @capacitor/core @capacitor/cli
-pnpm add @capacitor-community/background-geolocation
-npx cap init AYtracker com.aytracker.app
-npx cap add ios
-npx cap add android
-```
+### The service worker
 
-`capacitor.config.ts`:
+It caches the app shell and **nothing else**. Requests to `/api/` are not intercepted at all — they
+are not cached, not revalidated, not touched. This is not a performance decision:
 
-```ts
-import type { CapacitorConfig } from '@capacitor/cli';
+> Every screen in this product reports how far somebody drove, how long they worked, and whether
+> their phone is reporting right now. A cached copy of any of those is a confident, plausible lie.
+> A supervisor reading a stale live map would conclude a van is somewhere it left twenty minutes
+> ago.
 
-const config: CapacitorConfig = {
-  appId: 'com.aytracker.app',
-  appName: 'AYtracker',
-  webDir: 'apps/web/out',
-  plugins: {
-    BackgroundGeolocation: {
-      // The notification text is shown for as long as tracking runs. It is the platform
-      // enforcing the same promise this product makes independently.
-      backgroundMessage: 'AYtracker записва маршрута ви',
-      backgroundTitle: 'Активен курс',
-      requestPermissions: true,
-      stale: false,
-      distanceFilter: 25,
-    },
-  },
-};
+Navigations are network-first with the last good copy as a fallback, because a stale HTML document
+paired with a live API is how a client starts sending a request shape the server stopped accepting.
+Hashed build assets under `/_next/static/` are cache-first: their URLs contain a content hash, so a
+given URL's bytes never change.
 
-export default config;
-```
+The queue of unsent GPS points is **not** in the service worker. It is in IndexedDB, owned by this
+package, and it survives without any of this.
 
-### iOS
+Registration happens in the `/worker` and `/driver` route layouts, which means it covers the login
+screens too. That is the point: an installed app opens at the login screen, and caching the shell
+only after sign-in would be exactly one visit too late for the worker with no signal.
 
-`ios/App/App/Info.plist`:
+### Verified
 
-```xml
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>AYtracker записва маршрута ви, докато сте на курс.</string>
-
-<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>AYtracker записва маршрута ви по време на смяната, включително при изгасен екран. Записът спира, когато приключите курса.</string>
-
-<key>UIBackgroundModes</key>
-<array>
-  <string>location</string>
-  <string>fetch</string>
-</array>
-```
-
-Requirements that are easy to get wrong:
-
-- **The purpose strings must be in the driver's language and must be specific.** App Review
-  rejects vague ones, and a driver reading a generic string has not really consented.
-- **Ask in-app before triggering the system prompt.** The driver portal explains why "Always" is
-  needed and only then calls `requestAlwaysAuthorization()`. iOS shows the system dialog once; a
-  driver who declines it because it arrived without context cannot be asked again from inside the
-  app.
-- **iOS may downgrade "Always" to "While Using" on its own** after a period, and shows the driver a
-  reminder with a map of collected locations. Handle a downgrade as a capability change: report it
-  in `CollectorStatus.permission` and let the portal say the recording is now foreground-only.
-- **`stop()` must actually stop the location manager.** Tracking that outlives the trip is both a
-  privacy violation and a rejection.
-
-### Android
-
-`android/app/src/main/AndroidManifest.xml`:
-
-```xml
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-<uses-permission android:name="android.permission.WAKE_LOCK" />
-
-<service
-    android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
-    android:foregroundServiceType="location"
-    android:enabled="true"
-    android:exported="false" />
-```
-
-Requirements that are easy to get wrong:
-
-- **`ACCESS_BACKGROUND_LOCATION` must be requested separately, and only after foreground location
-  has been granted.** Requesting both at once fails on Android 11+. On Android 11 and later the
-  system sends the user to Settings rather than showing a dialog, so the portal has to explain
-  where they are going before it opens it.
-- **A foreground service with a persistent notification is mandatory.** Do not try to hide or
-  minimise the notification. It is the platform telling the driver they are being tracked, which is
-  the same thing this product commits to.
-- **Battery optimisation kills background services.** Some OEM builds (Xiaomi, Huawei, Oppo,
-  Samsung) are far more aggressive than stock Android. Detect it and ask the driver once to exempt
-  AYtracker; if they decline, that is their call — record the resulting silence as a gap like any
-  other.
-- **Play Console requires a background-location declaration** with a video demonstrating the
-  in-app disclosure and the runtime prompt. Budget review time for it.
-
-### Play Store and App Store disclosure
-
-Both stores require a prominent in-app disclosure _before_ the runtime permission request,
-explaining what is collected, why, and that it continues in the background. The driver portal shows
-it as a full screen on first trip, not a line of small print, and the acceptance is recorded in the
-audit log with a timestamp — because "the driver was told" is a claim the operator may one day have
-to substantiate.
+- The manifest and all five icons serve, and the manifest link and `apple-touch-icon` are in the
+  document head.
+- The worker registers, activates and takes control of the page.
+- After an API call, the cache holds shell entries and **zero** `/api/` entries.
+- With the network cut, the login screen still renders with all its controls.
 
 ---
 
@@ -266,16 +185,17 @@ to substantiate.
 
 The notice keys in `capabilities.ts` map to what the device can really do:
 
-| Capability        | Message                                                                           |
-| ----------------- | --------------------------------------------------------------------------------- |
-| `NATIVE`          | Recording continues with the screen off.                                          |
-| `WAKE_LOCK`       | Recording works while the screen is on. AYtracker keeps it awake during the trip. |
-| `FOREGROUND_ONLY` | Keep AYtracker open to record the route. Interruptions are marked.                |
-| `NONE`            | This device does not support location tracking.                                   |
+| Capability        | Message                                                                          |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `WAKE_LOCK`       | Recording works while the screen is on. The app keeps it awake during the shift. |
+| `FOREGROUND_ONLY` | Keep the app open to record the route. Interruptions are marked.                 |
+| `NONE`            | This device does not support location tracking.                                  |
 
-Only `NATIVE` promises screen-off recording, and only a native build can return it. The strings are
-message keys resolved through `@aytracker/localization` — never English literals from the
-capability module, since the driver may not read English.
+**No capability promises screen-off recording**, because none can. The wording takes the
+application's name as an argument rather than hardcoding "AYtracker": the product is white-label,
+and the name in that sentence has to be the one on the bar above it. The keys are resolved through
+`@aytracker/localization` — never English literals from the capability module, since the person
+reading may not read English.
 
 ---
 
