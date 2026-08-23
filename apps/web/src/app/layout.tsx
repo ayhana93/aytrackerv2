@@ -24,7 +24,23 @@ export const metadata: Metadata = {
   title: 'AYtracker',
   description: 'Manufacturing and fleet operations platform',
   applicationName: 'AYtracker',
+  /*
+   * Installable, because this product is web-based and a worker with an icon on their home
+   * screen is a worker who opens the app. `app/manifest.ts` is served at /manifest.webmanifest
+   * and Next links it from here automatically.
+   *
+   * The iOS keys are separate because Safari ignores the manifest for home-screen installs: it
+   * reads `apple-mobile-web-app-*` and `apple-touch-icon` instead, which is why that icon is a
+   * full-bleed opaque tile — iOS composites transparency onto black.
+   */
   appleWebApp: { capable: true, statusBarStyle: 'default', title: 'AYtracker' },
+  icons: {
+    icon: [
+      { url: '/favicon.png', sizes: '32x32', type: 'image/png' },
+      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: [{ url: '/icons/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
+  },
 };
 
 export const viewport: Viewport = {

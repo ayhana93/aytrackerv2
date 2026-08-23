@@ -1,34 +1,30 @@
 /**
  * @aytracker/tracking-client — location collection on the device.
  *
- * Shared between the web app and a native wrapper, which is why it is a package rather than
- * app code: the driver portal is written against one `LocationCollector` and does not know or
- * care whether a browser or a background service is underneath.
+ * A package rather than app code because the portals are written against one
+ * `LocationCollector` interface: the worker screen and the driver screen both ask for a
+ * collector and neither knows how it gets a fix.
  *
  * Read `capabilities.ts` first. It states, without hedging, what the web platform can and
- * cannot do about recording with the display off.
+ * cannot do about recording with the display off — which is the single fact that shapes every
+ * tracking screen in this product.
  */
 
 export * from './types';
 export * from './capabilities';
 export * from './queue';
 export { WebLocationCollector } from './web-collector';
-export { NativeLocationCollector } from './native-collector';
 
-import { detectCapabilities } from './capabilities';
-import { NativeLocationCollector } from './native-collector';
 import { WebLocationCollector } from './web-collector';
 import type { CollectorOptions, LocationCollector } from './types';
 
 /**
- * Picks the best collector this device can actually run.
+ * The collector for this device.
  *
- * Native when a wrapper is present, browser otherwise. The caller pairs this with
- * `detectCapabilities()` so the interface can tell the driver what will happen when the screen
- * goes off — rather than letting them find out at the end of the route.
+ * One implementation, because this is a web product. The indirection stays because the portals
+ * are better off depending on the interface than on the class — but there is no branch here
+ * choosing between backends, and no dormant native path pretending to be one.
  */
 export function createLocationCollector(options: CollectorOptions): LocationCollector {
-  return detectCapabilities().native
-    ? new NativeLocationCollector(options)
-    : new WebLocationCollector(options);
+  return new WebLocationCollector(options);
 }
